@@ -338,4 +338,24 @@ send the whole task with PUT; a route that changes only the fields it receives w
 
 ## Bonuses claimed
 
-None yet.
+- Bonus 20: Git repository
+
+## Bonus 20: Git repository
+
+Bonus 20: Git repository, https://github.com/eesmaeroz/assignment5-tasks-api
+
+- `.gitignore` leaves out `.env`, `*.db` (and `*.db-journal`), `node_modules`, `uploads/`
+  and `dist`, so no secret and no database file is in the repository.
+- It runs on a machine that has only Deno:
+
+  ```
+  git clone https://github.com/eesmaeroz/assignment5-tasks-api.git
+  cd assignment5-tasks-api
+  deno task test
+  ```
+
+  (`cp .env.example .env` is only needed for `deno task dev`; the tests make their own
+  temporary database.)
+- The history follows the steps of the handout: the starter (step 1), the tasks table
+  (step 2), the auth middleware (step 5), the routes with validation and pagination (steps
+  3 to 8), the tests (step 9), the README (step 10), then this section.
