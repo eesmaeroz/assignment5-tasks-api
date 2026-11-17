@@ -11,6 +11,7 @@ import {
   hashPassword,
   requireAuth,
 } from "./auth.ts";
+import { LoginLimiter } from "./ratelimit.ts";
 
 // ---------------------------------------------------------------------------
 // Schemas: every body, query string and path id goes through one of these.
@@ -43,7 +44,7 @@ type Issue = { path: PropertyKey[]; message: string };
 
 function fail(
   c: Context,
-  status: 400 | 401 | 404 | 409 | 500,
+  status: 400 | 401 | 404 | 409 | 429 | 500,
   error: string,
   issues: Issue[] = [],
 ) {
@@ -61,7 +62,7 @@ const readJson = (c: Context): Promise<unknown> => c.req.json().catch(() => unde
 // ---------------------------------------------------------------------------
 
 /** Build the whole application around a database, so tests can give it their own. */
-export function createApp(database: Db) {
+export function createApp(database: Db, limiter = new LoginLimiter()) {
   const { db } = database;
   const app = new Hono<Env>();
 
@@ -87,13 +88,23 @@ export function createApp(database: Db) {
   app.post("/auth/login", async (c) => {
     const parsed = Credentials.safeParse(await readJson(c));
     if (!parsed.success) return invalid(c, parsed.error);
+    const email = parsed.data.email.toLowerCase();
 
-    const [user] = await db.select().from(users)
-      .where(eq(users.email, parsed.data.email.toLowerCase()));
+    // Bonus 15: checked BEFORE the password, so a blocked email gets 429 even when the
+    // password is right (otherwise the 429 would tell an attacker the guess was correct).
+    const wait = limiter.retryAfter(email);
+    if (wait > 0) {
+      c.header("Retry-After", String(wait));
+      return fail(c, 429, "too many failed logins, try again later");
+    }
+
+    const [user] = await db.select().from(users).where(eq(users.email, email));
     // The same answer for an unknown email and a wrong password.
     if (!user || !(await checkPassword(parsed.data.password, user.passwordHash))) {
+      limiter.recordFailure(email);
       return fail(c, 401, "wrong email or password");
     }
+    limiter.reset(email);
     return c.json({ token: await createSession(database, user.id) });
   });
 

@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (19)
+    deno task test       # all tests (25)
     deno task check      # type-check
     deno fmt --check     # formatting
     deno lint            # lint
@@ -95,17 +95,17 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tests
 
-19 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts` and
-the given health test. They cover everything the handout lists: duplicate email (409),
-wrong password (401), missing token (401), bad body (400), another user's task (404 for
-read, update **and** delete), invalid status (400) and pagination (page 2 holds the right
-task), plus filtering, bad query values, the 101-character title, an impossible due date,
-update and delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and
-`makeTask()`.
+25 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+given health test, and 6 in `tests/ratelimit_test.ts` for Bonus 15. They cover everything
+the handout lists: duplicate email (409), wrong password (401), missing token (401), bad
+body (400), another user's task (404 for read, update **and** delete), invalid status
+(400) and pagination (page 2 holds the right task), plus filtering, bad query values, the
+101-character title, an impossible due date, update and delete, and the 404 shape.
+`tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
-I checked that the tests really catch mistakes: when I removed the owner condition from
-`own()` on purpose, "another user's task is 404 for read, update and delete" failed (18
-passed, 1 failed), and after putting it back all 19 passed.
+The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
+"another user's task is 404 for read, update and delete" fails (at that time 18 passed and
+1 failed of 19), and with it back all pass.
 
 ## API with curl (R8)
 
@@ -338,7 +338,75 @@ send the whole task with PUT; a route that changes only the fields it receives w
 
 ## Bonuses claimed
 
+- Bonus 15: Rate limit on login
 - Bonus 20: Git repository
+
+## Bonus 15: Rate limit on login
+
+Bonus 15: Rate limit on login
+
+After 5 failed logins for one email within one minute, `POST /auth/login` answers **429**
+with a `Retry-After` header (seconds) until the minute is over, **even when the password
+is right**.
+
+- `src/ratelimit.ts` has a small `LoginLimiter` class: a `Map` from email to
+  `{ failures, resetAt }` (a fixed window that starts with the first failure).
+  `retryAfter(email)` is 0 or the seconds left, `recordFailure(email)` counts one failure,
+  and `reset(email)` clears the counter after a successful login. A window that is over
+  starts again from 0.
+- In the login route the limit is checked **before** the password. If it were checked
+  after, the 429 would only come for a wrong password, and a 200 behind the block would
+  tell an attacker that a guess was right.
+- The key is the email in lower case, the same as for login, so `ESMA@example.com` and
+  `esma@example.com` share one counter.
+- `createApp(db, limiter)` takes the limiter as a parameter (default: a new one), and the
+  limiter takes the clock as a parameter (default `Date.now`). So every test has its own
+  counters, and one test moves a fake clock forward instead of waiting a minute.
+
+Real run (bash):
+
+```
+$ curl -s -X POST localhost:8000/auth/register -H 'content-type: application/json' -d '{"email":"esma@example.com","password":"kediler123"}'
+{"id":1,"email":"esma@example.com","createdAt":1794946427}
+
+$ for i in 1 2 3 4 5; do curl -s -o /dev/null -w "attempt $i: %{http_code}\n" -X POST localhost:8000/auth/login -H 'content-type: application/json' -d '{"email":"esma@example.com","password":"yanlis-sifre"}'; done
+attempt 1: 401
+attempt 2: 401
+attempt 3: 401
+attempt 4: 401
+attempt 5: 401
+
+$ curl -si -X POST localhost:8000/auth/login -H 'content-type: application/json' -d '{"email":"esma@example.com","password":"kediler123"}'
+HTTP/1.1 429 Too Many Requests
+content-type: application/json
+retry-after: 60
+content-length: 63
+date: Tue, 17 Nov 2026 20:13:47 GMT
+
+{"error":"too many failed logins, try again later","issues":[]}
+```
+
+Tests (`tests/ratelimit_test.ts`, 6 tests): five failures and then 429 with `Retry-After`
+even with the right password; the block is per email (another user can still log in);
+upper and lower case count together; a successful login clears the counter; with a fake
+clock the email is still blocked after 30 seconds (`Retry-After: 30`) and may log in after
+the minute; and a unit test that an old window starts again from 0.
+
+**What this does not protect against:**
+
+- **Several servers.** The counters live in the memory of one process. With two servers
+  behind a load balancer each has its own counters, so an attacker gets 5 tries per
+  server. A shared store (Deno KV, Redis, or a table) would fix that.
+- **A restart.** A restart empties the map, and the counting starts again.
+- **Many emails.** It limits guesses **per email**, not per caller. Someone who tries one
+  common password against thousands of emails ("password spraying") is never blocked. That
+  needs a second limit per IP address (or per network).
+- **Locking out a real user.** Anyone who knows your email can make 5 wrong logins every
+  minute and keep you out. This is the price of limiting per email; longer windows make it
+  worse, and that is why the block here lasts only one minute.
+- **Memory.** An entry stays in the map until that email tries again after its window.
+  Many different emails would make the map grow; a timer that deletes old entries would
+  fix that.
 
 ## Bonus 20: Git repository
 
