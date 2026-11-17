@@ -9,9 +9,10 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (28)
+    deno task test       # all tests (35)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
+    deno task start:test # Bonus 11: start with .env.test (port 8001)
     deno fmt --check     # formatting
     deno lint            # lint
 
@@ -97,13 +98,13 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 ### Tests
 
 28 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
-given health test, 6 in `tests/ratelimit_test.ts` for Bonus 15 and 3 in
-`tests/seed_test.ts` for Bonus 5. They cover everything the handout lists: duplicate email
-(409), wrong password (401), missing token (401), bad body (400), another user's task (404
-for read, update **and** delete), invalid status (400) and pagination (page 2 holds the
-right task), plus filtering, bad query values, the 101-character title, an impossible due
-date, update and delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and
-`makeTask()`.
+given health test, 6 in `tests/ratelimit_test.ts` for Bonus 15, 3 in `tests/seed_test.ts`
+for Bonus 5 and 7 in `tests/config_test.ts` for Bonus 11. They cover everything the
+handout lists: duplicate email (409), wrong password (401), missing token (401), bad body
+(400), another user's task (404 for read, update **and** delete), invalid status (400) and
+pagination (page 2 holds the right task), plus filtering, bad query values, the
+101-character title, an impossible due date, update and delete, and the 404 shape.
+`tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -360,6 +361,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 ## Bonuses claimed
 
 - Bonus 5: Seed data
+- Bonus 11: Health, readiness and configuration
 - Bonus 15: Rate limit on login
 - Bonus 18: Continuous integration
 - Bonus 20: Git repository
@@ -408,6 +410,85 @@ tasks) and a second run adds 0 and 0; a real user who registered first can still
 and has no demo tasks; a demo user can log in and gets a first page of 5 out of 11 tasks.
 `seed()` is exported and takes the database, so the tests run it on a temporary file
 instead of the real `tasks.db`.
+
+## Bonus 11: Health, readiness and configuration
+
+Bonus 11: Health, readiness and configuration
+
+### Two health routes
+
+| Route          | Answers                                               | Meaning for a platform                                                                        |
+| -------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `GET /healthz` | always 200 `{ "ok": true }`                           | **liveness**: the process is up. If this fails, restart it.                                   |
+| `GET /readyz`  | 200 `{ "ready": true }`, or 503 when `SELECT 1` fails | **readiness**: it can do real work. If this fails, send it no traffic, but do not restart it. |
+
+`/healthz` does not touch the database on purpose: if the database is down, restarting the
+API would not help, so liveness must stay green while readiness goes red. Both are outside
+`/api`, so they need no token. The 503 uses the same error shape as every other failure.
+
+```
+$ curl -s localhost:8001/healthz
+{"ok":true}
+$ curl -s localhost:8001/readyz
+{"ready":true}
+```
+
+### One validated configuration
+
+`src/config.ts` reads `APP_ENV`, `PORT`, `DATABASE_URL` and `JWT_SECRET` **once**, checks
+them with a Zod schema and returns one typed `config` object. `src/main.ts` uses only that
+object; there is no `Deno.env.get` anywhere else. A wrong value stops the server at
+start-up with a message that names every bad setting, instead of failing later in the
+middle of a request.
+
+- `APP_ENV` is `development`, `test` or `production` (default `development`).
+- `PORT` is a whole number from 1 to 65535 (default 8000); `"8001"` from the file becomes
+  `8001`.
+- `DATABASE_URL` must start with `file:`, `libsql:` or `http(s):` (default
+  `file:./tasks.db`).
+- In **production**, `JWT_SECRET` may not be a development value (`change-me`,
+  `dev-secret`, or empty, which means the default) and must have at least 32 characters.
+- An empty value in a `.env` file counts as "not set", so the default applies.
+
+`loadConfig(env)` takes the environment as a plain object, so the tests can pass any
+values without changing the real environment.
+
+### Environment files
+
+- `.env.test`: `APP_ENV=test`, port 8001, its own `tasks-test.db`. No secrets, so it is in
+  Git. Start with `deno task start:test`.
+- `.env.production.example`: the template. Copy it to `.env.production` and fill in a real
+  secret; `.env.production` is in `.gitignore`, so the secret never reaches Git. Start
+  with `deno task start:prod`.
+
+Real runs (bash):
+
+```
+$ deno task start:test
+Task start:test deno run -A --env-file=.env.test src/main.ts
+APP_ENV=test, database file:./tasks-test.db
+
+$ deno task start:prod      # .env.production copied from the example, JWT_SECRET still empty
+Task start:prod deno run -A --env-file=.env.production src/main.ts
+invalid configuration:
+  JWT_SECRET: the default development secret is not allowed in production
+
+$ PORT=eighty APP_ENV=staging deno task start
+Task start deno run -A src/main.ts
+invalid configuration:
+  APP_ENV: Invalid option: expected one of "development"|"test"|"production"
+  PORT: Invalid input: expected number, received NaN
+```
+
+The example production file has an empty `JWT_SECRET`, so the default `change-me` applies,
+and the server refuses to start, which is exactly the point: nobody can start production
+by accident with a known secret.
+
+Tests (`tests/config_test.ts`, 7 tests): `/healthz` is 200 without a token; `/readyz` is
+200 with a working database; `/readyz` is 503 after the database client is closed while
+`/healthz` stays 200; the development defaults; values are converted (`"9001"` → `9001`);
+a bad `PORT`, `APP_ENV` and `DATABASE_URL` are all named in one error; production refuses
+the default secret, a missing secret and a short one, and accepts 32 characters.
 
 ## Bonus 15: Rate limit on login
 

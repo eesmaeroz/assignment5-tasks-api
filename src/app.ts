@@ -1,6 +1,6 @@
 // Meryem Esma Eröz, 2200005798
 import { type Context, Hono } from "hono";
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db.ts";
 import { PRIORITIES, STATUSES, tasks, users } from "./schema.ts";
@@ -44,7 +44,7 @@ type Issue = { path: PropertyKey[]; message: string };
 
 function fail(
   c: Context,
-  status: 400 | 401 | 404 | 409 | 429 | 500,
+  status: 400 | 401 | 404 | 409 | 429 | 500 | 503,
   error: string,
   issues: Issue[] = [],
 ) {
@@ -67,6 +67,20 @@ export function createApp(database: Db, limiter = new LoginLimiter()) {
   const app = new Hono<Env>();
 
   app.get("/health", (c) => c.json({ ok: true }));
+
+  // Bonus 11: liveness and readiness for a platform (Docker, Kubernetes, a load balancer).
+  // /healthz: the process is up and answers. It never touches the database.
+  app.get("/healthz", (c) => c.json({ ok: true }));
+  // /readyz: the process can do real work, so the database must answer a query.
+  app.get("/readyz", async (c) => {
+    try {
+      await db.run(sql`SELECT 1`);
+      return c.json({ ready: true });
+    } catch (error) {
+      console.error("readyz:", error);
+      return fail(c, 503, "database not reachable");
+    }
+  });
 
   // ----- Auth ---------------------------------------------------------------
 
