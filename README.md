@@ -338,10 +338,30 @@ becomes `medium` and `dueDate` becomes `null`. The API does what the handout des
 send the whole task with PUT; a route that changes only the fields it receives would be a
 `PATCH`.
 
+### 6. My first CI run was red because of a missing newline
+
+I created `.github/workflows/ci.yml` with Notepad, pasted the workflow and pushed. The
+first run on GitHub Actions failed at the very first check:
+
+```
+Run deno fmt --check
+from /home/runner/work/assignment5-tasks-api/assignment5-tasks-api/.github/workflows/ci.yml:
+16 | -      - run: deno task test
+   | \ No newline at end of file
+16 | +      - run: deno task test
+error: Found 1 not formatted file in 22 files
+Error: Process completed with exit code 1.
+```
+
+Notepad saved the file without a newline after the last line, and `deno fmt` checks YAML
+files too, not only TypeScript. `deno fmt .github\workflows\ci.yml` added the newline, and
+the next push was green. The CI caught a mistake on the first try, in the CI file itself.
+
 ## Bonuses claimed
 
 - Bonus 5: Seed data
 - Bonus 15: Rate limit on login
+- Bonus 18: Continuous integration
 - Bonus 20: Git repository
 
 ## Bonus 5: Seed data
@@ -455,6 +475,26 @@ the minute; and a unit test that an old window starts again from 0.
 - **Memory.** An entry stays in the map until that email tries again after its window.
   Many different emails would make the map grow; a timer that deletes old entries would
   fix that.
+
+## Bonus 18: Continuous integration
+
+Bonus 18: Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request on GitHub Actions
+(`ubuntu-latest`, Deno 2.x): `deno fmt --check`, `deno lint`, `deno task check` and
+`deno task test`. The steps run in that order and the run stops at the first one that
+fails, so the cheap checks come first.
+
+- **Green run:**
+  https://github.com/eesmaeroz/assignment5-tasks-api/actions/runs/44168745789 (run #2,
+  "Fix CI: add the missing newline at the end of ci.yml")
+- **Red run:** https://github.com/eesmaeroz/assignment5-tasks-api/actions/runs/44168308916
+  (run #1, "Add Bonus 18: CI on GitHub Actions"), failed at `deno fmt --check` because
+  `ci.yml` itself had no newline at the end. What happened and how I fixed it is in My own
+  log, entry 6.
+
+What I did: created the workflow file, pushed, opened the **Actions** tab of the
+repository, read the failing step's log, fixed the file with `deno fmt`, and pushed again.
 
 ## Bonus 20: Git repository
 
