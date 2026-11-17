@@ -9,8 +9,9 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (25)
+    deno task test       # all tests (28)
     deno task check      # type-check
+    deno task seed       # Bonus 5: demo users and tasks
     deno fmt --check     # formatting
     deno lint            # lint
 
@@ -95,13 +96,14 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tests
 
-25 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
-given health test, and 6 in `tests/ratelimit_test.ts` for Bonus 15. They cover everything
-the handout lists: duplicate email (409), wrong password (401), missing token (401), bad
-body (400), another user's task (404 for read, update **and** delete), invalid status
-(400) and pagination (page 2 holds the right task), plus filtering, bad query values, the
-101-character title, an impossible due date, update and delete, and the 404 shape.
-`tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+28 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+given health test, 6 in `tests/ratelimit_test.ts` for Bonus 15 and 3 in
+`tests/seed_test.ts` for Bonus 5. They cover everything the handout lists: duplicate email
+(409), wrong password (401), missing token (401), bad body (400), another user's task (404
+for read, update **and** delete), invalid status (400) and pagination (page 2 holds the
+right task), plus filtering, bad query values, the 101-character title, an impossible due
+date, update and delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and
+`makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -338,8 +340,54 @@ send the whole task with PUT; a route that changes only the fields it receives w
 
 ## Bonuses claimed
 
+- Bonus 5: Seed data
 - Bonus 15: Rate limit on login
 - Bonus 20: Git repository
+
+## Bonus 5: Seed data
+
+Bonus 5: Seed data
+
+`deno task seed` (`scripts/seed.ts`) opens the same database as the app (`DATABASE_URL`,
+or `file:./tasks.db`), creates the tables if needed, and adds two demo users with 11 and 9
+tasks: different statuses, priorities and due dates, enough for two pages with `limit=10`.
+
+**Log in as a demo user:** `demo.esma@example.com` or `demo.mery@example.com`, password
+`demo-password-1` (in the given UI too). These are demo values only, not real passwords.
+
+**Safe to run twice:**
+
+- Users are inserted with `onConflictDoNothing({ target: users.email })`, so an email that
+  is already there is skipped instead of failing on the `UNIQUE` constraint.
+- A demo user gets tasks only if they have **no** tasks yet, so a second run adds nothing,
+  and the tasks a demo user made by hand are never duplicated or deleted.
+- A real user who registered before is not touched (only the two demo emails are used).
+- With `APP_ENV=production` the script refuses to run, so demo accounts with a known
+  password never reach a real database.
+
+Real run on an empty database (bash):
+
+```
+$ deno task seed
+Task seed deno run -A scripts/seed.ts
+seed: file:./tasks.db -> added 2 users and 20 tasks
+seed: log in as demo.esma@example.com or demo.mery@example.com, password demo-password-1
+
+$ deno task seed
+Task seed deno run -A scripts/seed.ts
+seed: file:./tasks.db -> added 0 users and 0 tasks
+seed: log in as demo.esma@example.com or demo.mery@example.com, password demo-password-1
+
+$ APP_ENV=production deno task seed
+Task seed deno run -A scripts/seed.ts
+seed: refusing to run with APP_ENV=production
+```
+
+Tests (`tests/seed_test.ts`, 3 tests): the seed fills an empty database (2 users, 20
+tasks) and a second run adds 0 and 0; a real user who registered first can still log in
+and has no demo tasks; a demo user can log in and gets a first page of 5 out of 11 tasks.
+`seed()` is exported and takes the database, so the tests run it on a temporary file
+instead of the real `tasks.db`.
 
 ## Bonus 15: Rate limit on login
 
