@@ -31,6 +31,8 @@ export const tasks = sqliteTable("tasks", {
   // My own field: an optional due date as "YYYY-MM-DD" (null = no deadline).
   dueDate: text("due_date"),
   createdAt: integer("created_at").notNull().default(sql`(strftime('%s','now'))`),
+  // Bonus 2: soft delete. null = visible, a time (seconds) = deleted at that moment.
+  deletedAt: integer("deleted_at"),
 });
 
 export type Task = typeof tasks.$inferSelect;

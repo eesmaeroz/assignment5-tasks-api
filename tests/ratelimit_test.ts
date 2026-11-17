@@ -65,7 +65,7 @@ Deno.test("a successful login clears the counter", async () => {
 Deno.test("after the window the email may try again (fake clock, no waiting)", async () => {
   let now = 1_000_000;
   const limiter = new LoginLimiter(5, 60_000, () => now);
-  const app = await freshApp(limiter);
+  const app = await freshApp({ limiter });
   await send(app, "POST", "/auth/register", esma);
   for (let i = 0; i < 5; i++) await send(app, "POST", "/auth/login", wrong);
 

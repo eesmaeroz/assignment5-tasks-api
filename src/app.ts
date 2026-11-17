@@ -1,9 +1,9 @@
 // Meryem Esma Eröz, 2200005798
 import { type Context, Hono } from "hono";
-import { and, asc, count, eq, sql } from "drizzle-orm";
+import { and, asc, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db.ts";
-import { PRIORITIES, STATUSES, tasks, users } from "./schema.ts";
+import { PRIORITIES, STATUSES, type Task, tasks, users } from "./schema.ts";
 import {
   checkPassword,
   createSession,
@@ -61,9 +61,22 @@ const readJson = (c: Context): Promise<unknown> => c.req.json().catch(() => unde
 
 // ---------------------------------------------------------------------------
 
+/** The first task every new user gets (Bonus 2). A test can replace it. */
+export type WelcomeTask = (userId: number) => Pick<Task, "userId" | "title" | "priority">;
+
+const defaultWelcome: WelcomeTask = (userId) => ({
+  userId,
+  title: "Welcome! Add your first task",
+  priority: "low",
+});
+
+export type AppOptions = { limiter?: LoginLimiter; welcomeTask?: WelcomeTask };
+
 /** Build the whole application around a database, so tests can give it their own. */
-export function createApp(database: Db, limiter = new LoginLimiter()) {
+export function createApp(database: Db, options: AppOptions = {}) {
   const { db } = database;
+  const limiter = options.limiter ?? new LoginLimiter();
+  const welcomeTask = options.welcomeTask ?? defaultWelcome;
   const app = new Hono<Env>();
 
   app.get("/health", (c) => c.json({ ok: true }));
@@ -93,9 +106,16 @@ export function createApp(database: Db, limiter = new LoginLimiter()) {
       .where(eq(users.email, email));
     if (existing) return fail(c, 409, "email already registered");
 
-    const [user] = await db.insert(users)
-      .values({ email, passwordHash: await hashPassword(parsed.data.password) })
-      .returning({ id: users.id, email: users.email, createdAt: users.createdAt });
+    const passwordHash = await hashPassword(parsed.data.password);
+    // Bonus 2: the user and the welcome task are created in ONE transaction. If the second
+    // insert fails, the first one is rolled back, so there is never a user without it.
+    const user = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(users)
+        .values({ email, passwordHash })
+        .returning({ id: users.id, email: users.email, createdAt: users.createdAt });
+      await tx.insert(tasks).values(welcomeTask(created.id));
+      return created;
+    });
     return c.json(user, 201);
   });
 
@@ -126,9 +146,9 @@ export function createApp(database: Db, limiter = new LoginLimiter()) {
 
   app.use("/api/*", requireAuth(database));
 
-  /** The owner condition that every task query includes. */
+  /** The owner condition that every task query includes; deleted tasks are hidden. */
   const own = (id: number, userId: number) =>
-    and(eq(tasks.id, id), eq(tasks.userId, userId));
+    and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt));
 
   app.get("/api/tasks", async (c) => {
     const parsed = ListQuery.safeParse(c.req.query());
@@ -137,6 +157,7 @@ export function createApp(database: Db, limiter = new LoginLimiter()) {
 
     const where = and(
       eq(tasks.userId, c.get("userId")),
+      isNull(tasks.deletedAt),
       status ? eq(tasks.status, status) : undefined,
     );
     const items = await db.select().from(tasks).where(where)
@@ -174,9 +195,26 @@ export function createApp(database: Db, limiter = new LoginLimiter()) {
   app.delete("/api/tasks/:id", async (c) => {
     const id = TaskId.safeParse(c.req.param("id"));
     if (!id.success) return fail(c, 404, "task not found");
-    const [task] = await db.delete(tasks)
+    // Bonus 2: soft delete. The row stays; it only gets a deleted_at time.
+    const [task] = await db.update(tasks)
+      .set({ deletedAt: sql`(strftime('%s','now'))` })
       .where(own(id.data, c.get("userId"))).returning({ id: tasks.id });
     return task ? c.json({ ok: true }) : fail(c, 404, "task not found");
+  });
+
+  app.post("/api/tasks/:id/restore", async (c) => {
+    const id = TaskId.safeParse(c.req.param("id"));
+    if (!id.success) return fail(c, 404, "deleted task not found");
+    // Only a task of this user that IS deleted can be restored.
+    const [task] = await db.update(tasks)
+      .set({ deletedAt: null })
+      .where(and(
+        eq(tasks.id, id.data),
+        eq(tasks.userId, c.get("userId")),
+        isNotNull(tasks.deletedAt),
+      ))
+      .returning();
+    return task ? c.json(task) : fail(c, 404, "deleted task not found");
   });
 
   // ----- Everything else ------------------------------------------------------

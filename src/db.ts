@@ -37,7 +37,8 @@ export async function migrate({ client }: Db) {
        priority TEXT NOT NULL DEFAULT 'medium'
          CHECK (priority IN ('low', 'medium', 'high')),
        due_date TEXT,
-       created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+       created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+       deleted_at INTEGER
      )`,
   ]);
 }

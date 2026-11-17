@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (35)
+    deno task test       # all tests (40)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
@@ -53,16 +53,17 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Routes
 
-| Method and path                    | Token | Success                             | Failures      |
-| ---------------------------------- | ----- | ----------------------------------- | ------------- |
-| `GET /health`                      | no    | 200 `{ ok: true }`                  |               |
-| `POST /auth/register`              | no    | 201 `{ id, email, createdAt }`      | 400, 409      |
-| `POST /auth/login`                 | no    | 200 `{ token }`                     | 400, 401      |
-| `GET /api/tasks?page&limit&status` | yes   | 200 `{ items, page, limit, total }` | 400, 401      |
-| `POST /api/tasks`                  | yes   | 201 the new task                    | 400, 401      |
-| `GET /api/tasks/:id`               | yes   | 200 the task                        | 401, 404      |
-| `PUT /api/tasks/:id`               | yes   | 200 the updated task                | 400, 401, 404 |
-| `DELETE /api/tasks/:id`            | yes   | 200 `{ ok: true }`                  | 401, 404      |
+| Method and path                         | Token | Success                             | Failures      |
+| --------------------------------------- | ----- | ----------------------------------- | ------------- |
+| `GET /health`                           | no    | 200 `{ ok: true }`                  |               |
+| `POST /auth/register`                   | no    | 201 `{ id, email, createdAt }`      | 400, 409      |
+| `POST /auth/login`                      | no    | 200 `{ token }`                     | 400, 401      |
+| `GET /api/tasks?page&limit&status`      | yes   | 200 `{ items, page, limit, total }` | 400, 401      |
+| `POST /api/tasks`                       | yes   | 201 the new task                    | 400, 401      |
+| `GET /api/tasks/:id`                    | yes   | 200 the task                        | 401, 404      |
+| `PUT /api/tasks/:id`                    | yes   | 200 the updated task                | 400, 401, 404 |
+| `DELETE /api/tasks/:id`                 | yes   | 200 `{ ok: true }`                  | 401, 404      |
+| `POST /api/tasks/:id/restore` (Bonus 2) | yes   | 200 the restored task               | 401, 404      |
 
 ### Why it is built like this
 
@@ -99,18 +100,23 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 28 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, 6 in `tests/ratelimit_test.ts` for Bonus 15, 3 in `tests/seed_test.ts`
-for Bonus 5 and 7 in `tests/config_test.ts` for Bonus 11. They cover everything the
-handout lists: duplicate email (409), wrong password (401), missing token (401), bad body
-(400), another user's task (404 for read, update **and** delete), invalid status (400) and
-pagination (page 2 holds the right task), plus filtering, bad query values, the
-101-character title, an impossible due date, update and delete, and the 404 shape.
-`tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+for Bonus 5, 7 in `tests/config_test.ts` for Bonus 11 and 5 in `tests/softdelete_test.ts`
+for Bonus 2. They cover everything the handout lists: duplicate email (409), wrong
+password (401), missing token (401), bad body (400), another user's task (404 for read,
+update **and** delete), invalid status (400) and pagination (page 2 holds the right task),
+plus filtering, bad query values, the 101-character title, an impossible due date, update
+and delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and
+`makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
 1 failed of 19), and with it back all pass.
 
 ## API with curl (R8)
+
+These were recorded for the required part, before Bonus 2. Since Bonus 2 a new user also
+gets a welcome task (so ids and totals are one higher) and every task has a `deletedAt`
+field; the Bonus 2 section has a newer run.
 
 Real commands and real outputs, run against `deno task dev` on an empty database (bash;
 `-w '\n%{http_code}'` prints the status code on the last line).
@@ -360,11 +366,87 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 
 ## Bonuses claimed
 
+- Bonus 2: Soft delete, restore and a transaction
 - Bonus 5: Seed data
 - Bonus 11: Health, readiness and configuration
 - Bonus 15: Rate limit on login
 - Bonus 18: Continuous integration
 - Bonus 20: Git repository
+
+## Bonus 2: Soft delete, restore and a transaction
+
+Bonus 2: Soft delete, restore and a transaction
+
+### Soft delete and restore
+
+- `tasks` has a new nullable column `deleted_at` (`deletedAt` in `schema.ts`), in seconds
+  like `created_at`. `null` means the task is visible.
+- `DELETE /api/tasks/:id` no longer removes the row. It sets `deleted_at` to now with a
+  SQL expression (`strftime('%s','now')`), only for a task that is mine and not deleted
+  yet.
+- Every list and lookup adds `isNull(tasks.deletedAt)`: it is inside `own()`, which GET,
+  PUT and DELETE use, and inside the `where` of the list and its `count()`. So a deleted
+  task is not listed, not counted in `total`, cannot be read or changed, and deleting it
+  twice is 404.
+- `POST /api/tasks/:id/restore` sets `deleted_at` back to `null`, but only when the task
+  is mine **and** deleted (`isNotNull`). A task that is not deleted, not mine, or does not
+  exist is 404 `deleted task not found`, the same "as if it did not exist" rule as R4.
+
+Why soft delete: an accidental delete can be undone, and the history stays in the
+database. The cost: every query must remember the extra condition (that is why it is in
+one place, `own()`), and deleted rows still take space; a clean-up job (Bonus 14) would be
+the place to remove them for real after some time.
+
+**Existing databases:** `CREATE TABLE IF NOT EXISTS` does not add a column to a table that
+already exists, so an old `tasks.db` must be deleted once (the handout's troubleshooting
+says the same). Migrations (Bonus 1) are the real fix for this.
+
+### Register in one transaction
+
+Registering now creates the user **and** a first task "Welcome! Add your first task"
+(priority `low`) inside `db.transaction(async (tx) => { ... })`, using `tx` for both
+inserts. If the second insert throws, the first one is rolled back, so there is never a
+user without the welcome task.
+
+To prove the rollback, `createApp(db, { welcomeTask })` can take another welcome task. The
+test gives one with `priority: "urgent"`, which breaks the `CHECK (priority IN (...))` of
+the table, so the second insert fails: the answer is 500 in the normal error shape, the
+`users` table is still empty, and the same email can register afterwards (201).
+
+Real run on an empty database (bash, `TOKEN` from a login):
+
+```
+$ curl -s -X POST localhost:8000/auth/register -H 'content-type: application/json' -d '{"email":"esma@example.com","password":"kediler123"}'
+{"id":1,"email":"esma@example.com","createdAt":1794947818}
+
+$ curl -s localhost:8000/api/tasks -H "Authorization: Bearer $TOKEN"
+{"items":[{"id":1,"userId":1,"title":"Welcome! Add your first task","status":"todo","priority":"low","dueDate":null,"createdAt":1794947818,"deletedAt":null}],"page":1,"limit":20,"total":1}
+
+$ curl -s -X POST localhost:8000/api/tasks -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"title":"OOP lab 05","priority":"high"}'
+{"id":2,"userId":1,"title":"OOP lab 05","status":"todo","priority":"high","dueDate":null,"createdAt":1794947819,"deletedAt":null}
+
+$ curl -s -w '\n%{http_code}' -X DELETE localhost:8000/api/tasks/2 -H "Authorization: Bearer $TOKEN"
+{"ok":true}
+200
+
+$ curl -s localhost:8000/api/tasks -H "Authorization: Bearer $TOKEN"
+{"items":[{"id":1,"userId":1,"title":"Welcome! Add your first task","status":"todo","priority":"low","dueDate":null,"createdAt":1794947818,"deletedAt":null}],"page":1,"limit":20,"total":1}
+
+$ curl -s -w '\n%{http_code}' -X POST localhost:8000/api/tasks/2/restore -H "Authorization: Bearer $TOKEN"
+{"id":2,"userId":1,"title":"OOP lab 05","status":"todo","priority":"high","dueDate":null,"createdAt":1794947819,"deletedAt":null}
+200
+
+$ curl -s -w '\n%{http_code}' -X POST localhost:8000/api/tasks/2/restore -H "Authorization: Bearer $TOKEN"
+{"error":"deleted task not found","issues":[]}
+404
+```
+
+Tests (`tests/softdelete_test.ts`, 5 tests): register creates the welcome task; a deleted
+task is not listed, GET/PUT/DELETE are 404, but the row is still in the database with a
+`deletedAt` time; restore brings the task back with its title, priority and due date;
+restore is 404 for a task that is not deleted, not mine, or missing; and the rolled-back
+registration. Three older tests now expect the welcome task (the list, the pagination
+page, and the seed test's real user).
 
 ## Bonus 5: Seed data
 

@@ -41,13 +41,17 @@ Deno.test("seed does not touch a real user who registered first", async () => {
   });
   await seed(database);
   // the real user can still log in with her own password, and has no demo tasks
+  // (only her own welcome task from registering)
   const login = await send(app, "POST", "/auth/login", {
     email: "esma@example.com",
     password: "kediler123",
   });
   const { token } = await login.json();
   const list = await send(app, "GET", "/api/tasks", undefined, token);
-  assertEquals((await list.json()).total, 0);
+  const page = await list.json();
+  assertEquals(page.items.map((t: { title: string }) => t.title), [
+    "Welcome! Add your first task",
+  ]);
 });
 
 Deno.test("a demo user can log in and sees a full first page", async () => {

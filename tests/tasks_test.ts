@@ -26,10 +26,11 @@ Deno.test("create a task: 201 with the defaults filled in", async () => {
   assertEquals(task.status, "todo");
   assertEquals(task.priority, "medium");
   assertEquals(task.dueDate, null);
+  assertEquals(task.deletedAt, null);
   assertEquals(typeof task.createdAt, "number");
 });
 
-Deno.test("list shows only my own tasks", async () => {
+Deno.test("list shows only my own tasks (and my welcome task)", async () => {
   const app = await freshApp();
   const esma = await login(app, "esma@example.com");
   const mery = await login(app, "mery@example.com");
@@ -38,8 +39,11 @@ Deno.test("list shows only my own tasks", async () => {
   const res = await send(app, "GET", "/api/tasks", undefined, esma);
   assertEquals(res.status, 200);
   const page = await res.json();
-  assertEquals(page.total, 1);
-  assertEquals(page.items.map((t: { title: string }) => t.title), ["Calculus homework"]);
+  assertEquals(page.total, 2);
+  assertEquals(page.items.map((t: { title: string }) => t.title), [
+    "Welcome! Add your first task",
+    "Calculus homework",
+  ]);
 });
 
 Deno.test("another user's task is 404 for read, update and delete", async () => {
@@ -113,9 +117,9 @@ Deno.test("update and delete my own task", async () => {
   assertEquals(gone.status, 404);
 });
 
-Deno.test("pagination: page 2 with limit 2 holds the third task", async () => {
+Deno.test("pagination: page 2 with limit 2 holds the right tasks", async () => {
   const app = await freshApp();
-  const token = await login(app, "esma@example.com");
+  const token = await login(app, "esma@example.com"); // task 1: the welcome task
   for (const title of ["first", "second", "third"]) {
     await makeTask(app, token, { title });
   }
@@ -124,8 +128,8 @@ Deno.test("pagination: page 2 with limit 2 holds the third task", async () => {
   const page = await res.json();
   assertEquals(page.page, 2);
   assertEquals(page.limit, 2);
-  assertEquals(page.total, 3);
-  assertEquals(page.items.map((t: { title: string }) => t.title), ["third"]);
+  assertEquals(page.total, 4);
+  assertEquals(page.items.map((t: { title: string }) => t.title), ["second", "third"]);
 });
 
 Deno.test("filter by status, and the total counts only the filtered tasks", async () => {
