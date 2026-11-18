@@ -10,7 +10,9 @@
     "lint": "deno lint",
     "ui:install": "cd ui && deno install",
     "ui:dev": "cd ui && deno task dev",
-    "seed": "deno run -A scripts/seed.ts"
+    "seed": "deno run -A scripts/seed.ts",
+    "n1": "deno run -A scripts/n1.ts",
+    "explain": "deno run -A scripts/explain.ts"
   },
   "imports": {
     "hono": "npm:hono@^4",

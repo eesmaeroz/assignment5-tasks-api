@@ -9,10 +9,12 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (40)
+    deno task test       # all tests (46)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
+    deno task n1         # Bonus 3: count the queries of the N+1 and the GROUP BY summary
+    deno task explain    # Bonus 4: the query plan and time before and after the index
     deno fmt --check     # formatting
     deno lint            # lint
 
@@ -53,17 +55,18 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Routes
 
-| Method and path                         | Token | Success                             | Failures      |
-| --------------------------------------- | ----- | ----------------------------------- | ------------- |
-| `GET /health`                           | no    | 200 `{ ok: true }`                  |               |
-| `POST /auth/register`                   | no    | 201 `{ id, email, createdAt }`      | 400, 409      |
-| `POST /auth/login`                      | no    | 200 `{ token }`                     | 400, 401      |
-| `GET /api/tasks?page&limit&status`      | yes   | 200 `{ items, page, limit, total }` | 400, 401      |
-| `POST /api/tasks`                       | yes   | 201 the new task                    | 400, 401      |
-| `GET /api/tasks/:id`                    | yes   | 200 the task                        | 401, 404      |
-| `PUT /api/tasks/:id`                    | yes   | 200 the updated task                | 400, 401, 404 |
-| `DELETE /api/tasks/:id`                 | yes   | 200 `{ ok: true }`                  | 401, 404      |
-| `POST /api/tasks/:id/restore` (Bonus 2) | yes   | 200 the restored task               | 401, 404      |
+| Method and path                         | Token | Success                                  | Failures      |
+| --------------------------------------- | ----- | ---------------------------------------- | ------------- |
+| `GET /health`                           | no    | 200 `{ ok: true }`                       |               |
+| `POST /auth/register`                   | no    | 201 `{ id, email, createdAt }`           | 400, 409      |
+| `POST /auth/login`                      | no    | 200 `{ token }`                          | 400, 401      |
+| `GET /api/tasks?page&limit&status`      | yes   | 200 `{ items, page, limit, total }`      | 400, 401      |
+| `POST /api/tasks`                       | yes   | 201 the new task                         | 400, 401      |
+| `GET /api/tasks/:id`                    | yes   | 200 the task                             | 401, 404      |
+| `PUT /api/tasks/:id`                    | yes   | 200 the updated task                     | 400, 401, 404 |
+| `DELETE /api/tasks/:id`                 | yes   | 200 `{ ok: true }`                       | 401, 404      |
+| `POST /api/tasks/:id/restore` (Bonus 2) | yes   | 200 the restored task                    | 401, 404      |
+| `GET /api/me/summary` (Bonus 3)         | yes   | 200 `{ todo, in-progress, done, total }` | 401           |
 
 ### Why it is built like this
 
@@ -100,8 +103,9 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 28 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, 6 in `tests/ratelimit_test.ts` for Bonus 15, 3 in `tests/seed_test.ts`
-for Bonus 5, 7 in `tests/config_test.ts` for Bonus 11 and 5 in `tests/softdelete_test.ts`
-for Bonus 2. They cover everything the handout lists: duplicate email (409), wrong
+for Bonus 5, 7 in `tests/config_test.ts` for Bonus 11, 5 in `tests/softdelete_test.ts` for
+Bonus 2, 4 in `tests/summary_test.ts` for Bonus 3 and 2 in `tests/index_test.ts` for Bonus
+4 (46 in all). They cover everything the handout lists: duplicate email (409), wrong
 password (401), missing token (401), bad body (400), another user's task (404 for read,
 update **and** delete), invalid status (400) and pagination (page 2 holds the right task),
 plus filtering, bad query values, the 101-character title, an impossible due date, update
@@ -367,6 +371,8 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 ## Bonuses claimed
 
 - Bonus 2: Soft delete, restore and a transaction
+- Bonus 3: Joins and the N+1 problem
+- Bonus 4: Indexes and EXPLAIN
 - Bonus 5: Seed data
 - Bonus 11: Health, readiness and configuration
 - Bonus 15: Rate limit on login
@@ -447,6 +453,104 @@ task is not listed, GET/PUT/DELETE are 404, but the row is still in the database
 restore is 404 for a task that is not deleted, not mine, or missing; and the rolled-back
 registration. Three older tests now expect the welcome task (the list, the pagination
 page, and the seed test's real user).
+
+## Bonus 3: Joins and the N+1 problem
+
+Bonus 3: Joins and the N+1 problem
+
+`GET /api/me/summary` answers how many of my tasks are in each status (deleted tasks left
+out), with every status present even when it is 0:
+
+```
+$ curl -s localhost:8000/api/me/summary -H "Authorization: Bearer $TOKEN"
+{"todo":1,"in-progress":1,"done":2,"total":4}
+```
+
+`src/summary.ts` has the same function twice:
+
+- **`summaryNaive` (N+1):** one query for the ids of my tasks, then **one more query per
+  task** to read its status, and the counting happens in JavaScript.
+- **`summaryGrouped`:** **one** query, `SELECT status, count(*) ... GROUP BY status`; the
+  database counts and sends back at most three rows. The route uses this one.
+
+`deno task n1` (`scripts/n1.ts`) fills a temporary database with 10, 100 and 1000 tasks,
+runs both versions with a Drizzle logger that counts every query, and checks that both
+give the same answer. Real output on my computer (Windows):
+
+```
+10 tasks: naive 11 queries (2.5 ms), grouped 1 query (0.5 ms), same answer: true
+  naive, first 3 queries:
+    select "id" from "tasks" where ("tasks"."user_id" = ? and "tasks"."deleted_at" is null)
+    select "status" from "tasks" where "tasks"."id" = ?
+    select "status" from "tasks" where "tasks"."id" = ?
+  grouped:
+    select "status", count(*) from "tasks" where ("tasks"."user_id" = ? and "tasks"."deleted_at" is null) group by "tasks"."status"
+  answer: {"todo":4,"in-progress":3,"done":3,"total":10}
+100 tasks: naive 101 queries (11.1 ms), grouped 1 query (0.2 ms), same answer: true
+1000 tasks: naive 1001 queries (93.3 ms), grouped 1 query (0.5 ms), same answer: true
+```
+
+**Why the first one grows with the data and the second does not:** the naive version sends
+1 + N queries for N tasks, so 10 times more tasks means 10 times more queries; each query
+is a round trip to the database with its own parsing and planning, and here it went from
+2.5 ms to 93 ms. The grouped version sends one query whatever N is; the database still
+reads the rows, but inside one query, and only three numbers come back. With a database on
+another machine (Postgres, Turso) each extra query also costs a network round trip, so the
+difference would be much bigger than on a local SQLite file.
+
+Tests (`tests/summary_test.ts`, 4 tests): the counts per status (with the welcome task);
+deleted tasks and other users' tasks are left out; no token is 401; and the naive and the
+grouped version give the same answer.
+
+## Bonus 4: Indexes and EXPLAIN
+
+Bonus 4: Indexes and EXPLAIN
+
+Every task query in the API starts with `WHERE user_id = ?`, and the list often adds
+`AND status = ?`. So the index is on both columns, in that order:
+
+- `schema.ts`: `index("idx_tasks_user_status").on(t.userId, t.status)`
+- `migrate()`:
+  `CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status)`
+
+`deno task explain` (`scripts/explain.ts`) fills a temporary database with **20 users and
+20,000 tasks** (in batches of 500 rows), drops the index, and measures the query
+`SELECT * FROM tasks WHERE user_id = ? AND status = ?` (and the same condition with
+`count(*)`) 200 times each; then it creates the index and measures again. Real output on
+my computer (Windows):
+
+```
+filled: 20 users, 20000 tasks
+query: SELECT * FROM tasks WHERE user_id = ? AND status = ?   args: [7,"done"]
+rows found: 333
+before: SCAN tasks
+before: SELECT * 3.000 ms, count(*) 0.931 ms (average of 200)
+after:  SEARCH tasks USING INDEX idx_tasks_user_status (user_id=? AND status=?)
+after:  SELECT * 2.113 ms, count(*) 0.031 ms (average of 200)
+faster: SELECT * 1.4x, count(*) 30.0x
+database file: 804 KiB without the index, 1128 KiB with it
+```
+
+What the two plans say:
+
+- **Before: `SCAN tasks`**: SQLite reads all 20,000 rows and keeps the 333 that match.
+- **After: `SEARCH tasks USING INDEX idx_tasks_user_status (user_id=? AND status=?)`**: it
+  jumps in the index straight to the entries for user 7 with status `done`.
+
+What the numbers show: the search itself became about **30 times faster** (`count(*)`:
+0.931 ms → 0.031 ms), but `SELECT *` only went from 3.000 ms to 2.113 ms (1.4 times). With
+the index, finding the 333 rows is almost free, and most of the remaining time is reading
+the whole rows and sending all their columns back to JavaScript. So an index helps most
+when a query returns few rows out of many (one user's page of 20, a count, a lookup), and
+less when it returns many rows anyway.
+
+**What an index costs:** the file grew from 804 KiB to 1128 KiB (+40%) because the index
+is a second, sorted copy of the two columns; and every `INSERT`, `UPDATE` of `status` and
+`DELETE` must update the index too, so writes get a little slower.
+
+Tests (`tests/index_test.ts`, 2 tests): `migrate()` creates the index on
+`(user_id, status)`, and `EXPLAIN QUERY PLAN` for the shape of the list query and of its
+`count()` says `USING INDEX idx_tasks_user_status`.
 
 ## Bonus 5: Seed data
 

@@ -1,5 +1,5 @@
 // Meryem Esma Eröz, 2200005798
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 // Worked example: the users table.
@@ -33,6 +33,9 @@ export const tasks = sqliteTable("tasks", {
   createdAt: integer("created_at").notNull().default(sql`(strftime('%s','now'))`),
   // Bonus 2: soft delete. null = visible, a time (seconds) = deleted at that moment.
   deletedAt: integer("deleted_at"),
-});
+}, (t) => [
+  // Bonus 4: every task query starts with "WHERE user_id = ?", often "AND status = ?".
+  index("idx_tasks_user_status").on(t.userId, t.status),
+]);
 
 export type Task = typeof tasks.$inferSelect;

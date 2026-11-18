@@ -40,5 +40,7 @@ export async function migrate({ client }: Db) {
        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
        deleted_at INTEGER
      )`,
+    // Bonus 4: the index for "my tasks" and "my tasks with this status".
+    `CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status)`,
   ]);
 }
