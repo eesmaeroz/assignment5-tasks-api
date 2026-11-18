@@ -14,6 +14,8 @@ const ConfigSchema = z
       .regex(/^(file:|libsql:|https?:)/, "must start with file:, libsql: or http(s):")
       .default("file:./tasks.db"),
     JWT_SECRET: z.string().min(1).default("change-me"),
+    // Bonus 9: whoever registers with this email becomes an admin.
+    ADMIN_EMAIL: z.email().optional(),
   })
   .superRefine((c, ctx) => {
     if (c.APP_ENV !== "production") return;

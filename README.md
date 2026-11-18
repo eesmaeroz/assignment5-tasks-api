@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (46)
+    deno task test       # all tests (55)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
@@ -55,18 +55,19 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Routes
 
-| Method and path                         | Token | Success                                  | Failures      |
-| --------------------------------------- | ----- | ---------------------------------------- | ------------- |
-| `GET /health`                           | no    | 200 `{ ok: true }`                       |               |
-| `POST /auth/register`                   | no    | 201 `{ id, email, createdAt }`           | 400, 409      |
-| `POST /auth/login`                      | no    | 200 `{ token }`                          | 400, 401      |
-| `GET /api/tasks?page&limit&status`      | yes   | 200 `{ items, page, limit, total }`      | 400, 401      |
-| `POST /api/tasks`                       | yes   | 201 the new task                         | 400, 401      |
-| `GET /api/tasks/:id`                    | yes   | 200 the task                             | 401, 404      |
-| `PUT /api/tasks/:id`                    | yes   | 200 the updated task                     | 400, 401, 404 |
-| `DELETE /api/tasks/:id`                 | yes   | 200 `{ ok: true }`                       | 401, 404      |
-| `POST /api/tasks/:id/restore` (Bonus 2) | yes   | 200 the restored task                    | 401, 404      |
-| `GET /api/me/summary` (Bonus 3)         | yes   | 200 `{ todo, in-progress, done, total }` | 401           |
+| Method and path                         | Token      | Success                                  | Failures      |
+| --------------------------------------- | ---------- | ---------------------------------------- | ------------- |
+| `GET /health`                           | no         | 200 `{ ok: true }`                       |               |
+| `POST /auth/register`                   | no         | 201 `{ id, email, createdAt }`           | 400, 409      |
+| `POST /auth/login`                      | no         | 200 `{ token }`                          | 400, 401      |
+| `GET /api/tasks?page&limit&status`      | yes        | 200 `{ items, page, limit, total }`      | 400, 401      |
+| `POST /api/tasks`                       | yes        | 201 the new task                         | 400, 401      |
+| `GET /api/tasks/:id`                    | yes        | 200 the task                             | 401, 404      |
+| `PUT /api/tasks/:id`                    | yes        | 200 the updated task                     | 400, 401, 404 |
+| `DELETE /api/tasks/:id`                 | yes        | 200 `{ ok: true }`                       | 401, 404      |
+| `POST /api/tasks/:id/restore` (Bonus 2) | yes        | 200 the restored task                    | 401, 404      |
+| `GET /api/me/summary` (Bonus 3)         | yes        | 200 `{ todo, in-progress, done, total }` | 401           |
+| `GET /api/admin/users` (Bonus 9)        | yes, admin | 200 `{ items: [...] }`                   | 401, 403      |
 
 ### Why it is built like this
 
@@ -101,16 +102,17 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tests
 
-28 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
-given health test, 6 in `tests/ratelimit_test.ts` for Bonus 15, 3 in `tests/seed_test.ts`
-for Bonus 5, 7 in `tests/config_test.ts` for Bonus 11, 5 in `tests/softdelete_test.ts` for
-Bonus 2, 4 in `tests/summary_test.ts` for Bonus 3 and 2 in `tests/index_test.ts` for Bonus
-4 (46 in all). They cover everything the handout lists: duplicate email (409), wrong
-password (401), missing token (401), bad body (400), another user's task (404 for read,
-update **and** delete), invalid status (400) and pagination (page 2 holds the right task),
-plus filtering, bad query values, the 101-character title, an impossible due date, update
-and delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and
-`makeTask()`.
+55 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+given health test, and for the bonuses: 5 in `tests/softdelete_test.ts` (Bonus 2), 4 in
+`tests/summary_test.ts` (Bonus 3), 2 in `tests/index_test.ts` (Bonus 4), 3 in
+`tests/seed_test.ts` (Bonus 5), 6 in `tests/roles_test.ts` (Bonus 9), 3 in
+`tests/logging_test.ts` (Bonus 10), 7 in `tests/config_test.ts` (Bonus 11) and 6 in
+`tests/ratelimit_test.ts` (Bonus 15). They cover everything the handout lists: duplicate
+email (409), wrong password (401), missing token (401), bad body (400), another user's
+task (404 for read, update **and** delete), invalid status (400) and pagination (page 2
+holds the right task), plus filtering, bad query values, the 101-character title, an
+impossible due date, update and delete, and the 404 shape. `tests/helpers.ts` has
+`send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -374,6 +376,8 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 3: Joins and the N+1 problem
 - Bonus 4: Indexes and EXPLAIN
 - Bonus 5: Seed data
+- Bonus 9: Roles (RBAC)
+- Bonus 10: Logging and request ids
 - Bonus 11: Health, readiness and configuration
 - Bonus 15: Rate limit on login
 - Bonus 18: Continuous integration
@@ -597,6 +601,121 @@ and has no demo tasks; a demo user can log in and gets a first page of 5 out of 
 `seed()` is exported and takes the database, so the tests run it on a temporary file
 instead of the real `tasks.db`.
 
+## Bonus 9: Roles (RBAC)
+
+Bonus 9: Roles (RBAC)
+
+- `users` has a `role` column: `user` (the default) or `admin`, with a `CHECK` in the SQL
+  and `{ enum: ["user", "admin"] }` in `schema.ts`. An old `tasks.db` must be deleted
+  once, because `CREATE TABLE IF NOT EXISTS` does not add the column to an existing table.
+- `requireAuth` now reads the role from the `users` table next to the user id and stores
+  both (`c.set("role", ...)`). It reads the role on every request (not from the login), so
+  making somebody an admin, or taking it away, works at once.
+- `requireRole(...roles)` is a second middleware: **401** when nobody is logged in,
+  **403** when somebody is logged in but their role is not in the list. It guards
+  everything under `/api/admin/`.
+- `GET /api/admin/users` lists every user with the number of their tasks (deleted tasks
+  not counted), with one `LEFT JOIN` + `GROUP BY`, so a user with no tasks would still be
+  listed with 0. The password hash is never selected.
+
+**How an admin comes to exist:** with the `ADMIN_EMAIL` setting (checked as an email by
+`config.ts`). Whoever registers with that email (in any letter case) gets the role
+`admin`; everybody else gets `user`. The role can never come from the request body: `role`
+is not in the Zod schema of register, so it is dropped. Without `ADMIN_EMAIL` there is no
+admin at all, which is the safe default. To try it, start with
+`ADMIN_EMAIL=hoca@example.com deno task dev` (or put `ADMIN_EMAIL=...` in `.env`).
+
+**401 against 403:** 401 _Unauthorized_ really means "unauthenticated": I don't know who
+you are (no token, or a bad or expired one), so log in and try again. 403 _Forbidden_
+means "I know exactly who you are, and you may not do this": logging in again would not
+help. So the order matters: first `requireAuth` decides who you are (401), then
+`requireRole` decides what you may do (403).
+
+Real run (bash), started with `ADMIN_EMAIL=hoca@example.com`:
+
+```
+$ curl -s -X POST localhost:8000/auth/register -H 'content-type: application/json' -d '{"email":"hoca@example.com","password":"kediler123"}'
+{"id":1,"email":"hoca@example.com","role":"admin","createdAt":1794995747}
+
+$ curl -s -X POST localhost:8000/auth/register -H 'content-type: application/json' -d '{"email":"esma@example.com","password":"kediler123"}'
+{"id":2,"email":"esma@example.com","role":"user","createdAt":1794995747}
+
+$ curl -s -w '\n%{http_code}' localhost:8000/api/admin/users
+{"error":"unauthorized","issues":[]}
+401
+
+$ curl -s -w '\n%{http_code}' localhost:8000/api/admin/users -H "Authorization: Bearer $TOKEN"
+{"error":"forbidden","issues":[]}
+403
+
+$ curl -s -w '\n%{http_code}' localhost:8000/api/admin/users -H "Authorization: Bearer $ADMIN"
+{"items":[{"id":1,"email":"hoca@example.com","role":"admin","createdAt":1794995747,"tasks":1},{"id":2,"email":"esma@example.com","role":"user","createdAt":1794995747,"tasks":1}]}
+200
+```
+
+Tests (`tests/roles_test.ts`, 6 tests): no token is 401; a normal user is 403; the admin
+gets every user with their number of tasks and no password hash; register gives `admin`
+only to `ADMIN_EMAIL` (in any letter case); `"role": "admin"` in the body is ignored;
+without `ADMIN_EMAIL` nobody is an admin.
+
+## Bonus 10: Logging and request ids
+
+Bonus 10: Logging and request ids
+
+The first middleware in `createApp` gives every request a new id with
+`crypto.randomUUID()`, runs the rest of the app, then:
+
+- sets the **`x-request-id`** response header,
+- writes **one JSON line** to the log: `{ time, requestId, method, path, status, ms }`.
+
+A **404 and a 500** body also carries the id (`"requestId": "..."`), the same one as in
+the header and in the log line. So when a user reports an error, the id in their error
+message leads straight to the right line in the log.
+
+`createApp(db, { log })` takes the function that writes the line (default `console.log`).
+The tests give it an array to read the lines, and `freshApp()` gives an empty function so
+that the test output stays readable.
+
+A 404 with its id (bash):
+
+```
+$ curl -si localhost:8000/nothing-here
+HTTP/1.1 404 Not Found
+content-type: application/json
+x-request-id: 95b8ebba-50dd-45e0-b91c-fc5eb97c8b14
+content-length: 84
+date: Wed, 18 Nov 2026 09:55:47 GMT
+
+{"error":"not found","issues":[],"requestId":"95b8ebba-50dd-45e0-b91c-fc5eb97c8b14"}
+```
+
+The server log of the run above (the Bonus 9 requests and this 404), one line per request;
+the last line has the same id as the 404:
+
+```
+{"time":"2026-11-18T09:55:47.507Z","requestId":"f7e81ed9-c4cf-4e05-afde-1d0cbaf47cff","method":"POST","path":"/auth/register","status":201,"ms":78}
+{"time":"2026-11-18T09:55:47.585Z","requestId":"e3da8fcb-1b89-4cb9-afa7-859419d4b41c","method":"POST","path":"/auth/register","status":201,"ms":72}
+{"time":"2026-11-18T09:55:47.659Z","requestId":"8140b9cb-3fc3-4e4c-bfa4-faeb8fce95d8","method":"POST","path":"/auth/login","status":200,"ms":67}
+{"time":"2026-11-18T09:55:47.736Z","requestId":"59a637dd-98ce-4841-8106-b6e76746cdc5","method":"POST","path":"/auth/login","status":200,"ms":67}
+{"time":"2026-11-18T09:55:47.745Z","requestId":"4baee80d-4eb0-498c-b819-5c6aa12ba9f5","method":"GET","path":"/api/admin/users","status":401,"ms":1}
+{"time":"2026-11-18T09:55:47.751Z","requestId":"41e1f5b3-fad2-43ee-9929-504db65c7b85","method":"GET","path":"/api/admin/users","status":403,"ms":1}
+{"time":"2026-11-18T09:55:47.757Z","requestId":"8d9ff80f-daee-439e-a918-44b2fe2e9c58","method":"GET","path":"/api/admin/users","status":200,"ms":1}
+{"time":"2026-11-18T09:55:47.762Z","requestId":"95b8ebba-50dd-45e0-b91c-fc5eb97c8b14","method":"GET","path":"/nothing-here","status":404,"ms":0}
+```
+
+**No password or token in the log, and how I checked:** the middleware logs only six
+fields that it builds itself: never the body (where the password is), never a header
+(where the token is), and only `c.req.path`, which has no query string. The test "no log
+line contains a password or a token" registers, logs in, makes an authenticated request
+with a query string, and makes a failed login, then checks that none of the log lines
+contains the password, the wrong password, the token or the query string. The log above
+was also read by eye: it has paths, statuses and times only.
+
+Tests (`tests/logging_test.ts`, 3 tests): every response has an `x-request-id` that is a
+UUID and different each time; exactly one JSON line per request, with the same id as the
+header and exactly the six fields; no password, token or query string in any line. Two
+older tests now also check that the id in a 404 and a 500 body is the same as the header.
+
 ## Bonus 11: Health, readiness and configuration
 
 Bonus 11: Health, readiness and configuration
@@ -634,6 +753,7 @@ middle of a request.
   `file:./tasks.db`).
 - In **production**, `JWT_SECRET` may not be a development value (`change-me`,
   `dev-secret`, or empty, which means the default) and must have at least 32 characters.
+- `ADMIN_EMAIL` (optional, Bonus 9) must be an email address.
 - An empty value in a `.env` file counts as "not set", so the default applies.
 
 `loadConfig(env)` takes the environment as a plain object, so the tests can pass any

@@ -21,7 +21,7 @@ Deno.test("a deleted task is not listed and not found, but the row is still ther
   const file = await Deno.makeTempFile({ suffix: ".db" });
   const database = createDb(`file:${file}`);
   await migrate(database);
-  const app = createApp(database);
+  const app = createApp(database, { log: () => {} });
   const token = await login(app, "esma@example.com");
   const task = await makeTask(app, token, { title: "Read chapter 5" });
 
@@ -94,6 +94,7 @@ Deno.test("when the welcome task fails, the user is rolled back too", async () =
   await migrate(database);
   // A welcome task that breaks a CHECK constraint, so the second insert throws.
   const app = createApp(database, {
+    log: () => {},
     welcomeTask: (userId) => ({ userId, title: "Welcome!", priority: "urgent" as "low" }),
   });
 
@@ -102,13 +103,16 @@ Deno.test("when the welcome task fails, the user is rolled back too", async () =
     password: "kediler123",
   });
   assertEquals(res.status, 500);
-  assertEquals(await res.json(), { error: "internal error", issues: [] });
+  const body = await res.json();
+  assertEquals([body.error, body.issues], ["internal error", []]);
+  // Bonus 10: the 500 names the request, the same id as in the x-request-id header
+  assertEquals(body.requestId, res.headers.get("x-request-id"));
 
   const [{ n }] = await database.db.select({ n: count() }).from(users);
   assertEquals(n, 0); // no user left behind without a welcome task
 
   // and because nothing was left behind, the same email can register later
-  const fixed = createApp(database);
+  const fixed = createApp(database, { log: () => {} });
   const retry = await send(fixed, "POST", "/auth/register", {
     email: "esma@example.com",
     password: "kediler123",

@@ -2,6 +2,7 @@
 import bcrypt from "bcryptjs";
 import type { MiddlewareHandler } from "hono";
 import type { Db } from "./db.ts";
+import type { Role } from "./schema.ts";
 
 export const hashPassword = (plain: string) => bcrypt.hash(plain, 10);
 export const checkPassword = (plain: string, hash: string) => bcrypt.compare(plain, hash);
@@ -30,8 +31,11 @@ export async function userIdFromToken(db: Db, token: string): Promise<number | n
   return id === undefined ? null : Number(id);
 }
 
-/** What the middleware stores for the routes: the id of the logged-in user. */
-export type Env = { Variables: { userId: number } };
+/**
+ * What the middlewares store for the routes: the request id (Bonus 10, set for every
+ * request), and for /api routes the id and the role of the logged-in user (Bonus 9).
+ */
+export type Env = { Variables: { requestId: string; userId: number; role: Role } };
 
 /**
  * A middleware factory: it needs the database, so it takes db and returns the middleware.
@@ -44,6 +48,29 @@ export const requireAuth = (db: Db): MiddlewareHandler<Env> => async (c, next) =
   if (id === null) {
     return c.json({ error: "unauthorized", issues: [] }, 401);
   }
+  // Bonus 9: the role is read from the users table on every request, so a change of
+  // role works at once, without logging in again.
+  const res = await db.client.execute({
+    sql: "SELECT role FROM users WHERE id = ?",
+    args: [id],
+  });
+  const role = res.rows[0]?.role;
+  if (role !== "user" && role !== "admin") {
+    return c.json({ error: "unauthorized", issues: [] }, 401);
+  }
   c.set("userId", id);
+  c.set("role", role);
   await next();
 };
+
+/**
+ * Bonus 9: only these roles may pass. 401 when nobody is logged in (no role was set),
+ * 403 when somebody is logged in but their role is not allowed.
+ */
+export const requireRole =
+  (...roles: Role[]): MiddlewareHandler<Env> => async (c, next) => {
+    const role = c.get("role");
+    if (!role) return c.json({ error: "unauthorized", issues: [] }, 401);
+    if (!roles.includes(role)) return c.json({ error: "forbidden", issues: [] }, 403);
+    await next();
+  };

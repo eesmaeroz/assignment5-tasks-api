@@ -24,7 +24,7 @@ Deno.test("GET /readyz is 503 when the database is gone, /healthz is still 200",
   const file = await Deno.makeTempFile({ suffix: ".db" });
   const database = createDb(`file:${file}`);
   await migrate(database);
-  const app = createApp(database);
+  const app = createApp(database, { log: () => {} });
   database.client.close(); // simulate a lost database connection
   const ready = await app.request("/readyz");
   assertEquals(ready.status, 503);

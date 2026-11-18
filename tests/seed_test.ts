@@ -34,7 +34,7 @@ Deno.test("seed fills an empty database, and a second run adds nothing", async (
 
 Deno.test("seed does not touch a real user who registered first", async () => {
   const database = await freshDb();
-  const app = createApp(database);
+  const app = createApp(database, { log: () => {} });
   await send(app, "POST", "/auth/register", {
     email: "esma@example.com",
     password: "kediler123",
@@ -57,7 +57,7 @@ Deno.test("seed does not touch a real user who registered first", async () => {
 Deno.test("a demo user can log in and sees a full first page", async () => {
   const database = await freshDb();
   await seed(database);
-  const app = createApp(database);
+  const app = createApp(database, { log: () => {} });
   const login = await send(app, "POST", "/auth/login", {
     email: "demo.esma@example.com",
     password: DEMO_PASSWORD,

@@ -7,6 +7,8 @@ export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
+  // Bonus 9: what the user may do. Everybody is "user"; see ADMIN_EMAIL in config.ts.
+  role: text("role", { enum: ["user", "admin"] }).notNull().default("user"),
   // A SQL default runs for every row. A JavaScript Date.now() here would run once.
   createdAt: integer("created_at").notNull().default(sql`(strftime('%s','now'))`),
 });
@@ -39,3 +41,4 @@ export const tasks = sqliteTable("tasks", {
 ]);
 
 export type Task = typeof tasks.$inferSelect;
+export type Role = typeof users.$inferSelect["role"];

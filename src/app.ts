@@ -10,6 +10,7 @@ import {
   type Env,
   hashPassword,
   requireAuth,
+  requireRole,
 } from "./auth.ts";
 import { LoginLimiter } from "./ratelimit.ts";
 import { summaryGrouped } from "./summary.ts";
@@ -44,21 +45,27 @@ const TaskId = z.coerce.number().int().positive();
 type Issue = { path: PropertyKey[]; message: string };
 
 function fail(
-  c: Context,
-  status: 400 | 401 | 404 | 409 | 429 | 500 | 503,
+  c: Context<Env>,
+  status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 503,
   error: string,
   issues: Issue[] = [],
 ) {
+  // Bonus 10: a 404 or a 500 also names the request, so a user can report the id and it
+  // can be found in the log.
+  if (status === 404 || status === 500) {
+    return c.json({ error, issues, requestId: c.get("requestId") }, status);
+  }
   return c.json({ error, issues }, status);
 }
 
-function invalid(c: Context, error: z.ZodError) {
+function invalid(c: Context<Env>, error: z.ZodError) {
   const issues = error.issues.map((i) => ({ path: i.path, message: i.message }));
   return fail(c, 400, "validation failed", issues);
 }
 
 /** Read a JSON body; a missing or broken body becomes undefined, which Zod rejects. */
-const readJson = (c: Context): Promise<unknown> => c.req.json().catch(() => undefined);
+const readJson = (c: Context<Env>): Promise<unknown> =>
+  c.req.json().catch(() => undefined);
 
 // ---------------------------------------------------------------------------
 
@@ -71,14 +78,42 @@ const defaultWelcome: WelcomeTask = (userId) => ({
   priority: "low",
 });
 
-export type AppOptions = { limiter?: LoginLimiter; welcomeTask?: WelcomeTask };
+export type AppOptions = {
+  limiter?: LoginLimiter;
+  welcomeTask?: WelcomeTask;
+  /** Bonus 9: whoever registers with this email becomes an admin. */
+  adminEmail?: string;
+  /** Bonus 10: where the one-line JSON request logs go (default: console.log). */
+  log?: (line: string) => void;
+};
 
 /** Build the whole application around a database, so tests can give it their own. */
 export function createApp(database: Db, options: AppOptions = {}) {
   const { db } = database;
   const limiter = options.limiter ?? new LoginLimiter();
   const welcomeTask = options.welcomeTask ?? defaultWelcome;
+  const adminEmail = options.adminEmail?.toLowerCase();
+  const log = options.log ?? ((line: string) => console.log(line));
   const app = new Hono<Env>();
+
+  // Bonus 10: the first middleware. It gives every request an id, runs the rest, then
+  // writes ONE JSON line. Only these fields are logged: never a body, a header or a query
+  // string, so a password or a token cannot end up in the log.
+  app.use("*", async (c, next) => {
+    const requestId = crypto.randomUUID();
+    c.set("requestId", requestId);
+    const start = performance.now();
+    await next();
+    c.header("x-request-id", requestId);
+    log(JSON.stringify({
+      time: new Date().toISOString(),
+      requestId,
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status,
+      ms: Math.round(performance.now() - start),
+    }));
+  });
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -111,9 +146,15 @@ export function createApp(database: Db, options: AppOptions = {}) {
     // Bonus 2: the user and the welcome task are created in ONE transaction. If the second
     // insert fails, the first one is rolled back, so there is never a user without it.
     const user = await db.transaction(async (tx) => {
+      const role = email === adminEmail ? "admin" : "user";
       const [created] = await tx.insert(users)
-        .values({ email, passwordHash })
-        .returning({ id: users.id, email: users.email, createdAt: users.createdAt });
+        .values({ email, passwordHash, role })
+        .returning({
+          id: users.id,
+          email: users.email,
+          role: users.role,
+          createdAt: users.createdAt,
+        });
       await tx.insert(tasks).values(welcomeTask(created.id));
       return created;
     });
@@ -150,6 +191,27 @@ export function createApp(database: Db, options: AppOptions = {}) {
   /** The owner condition that every task query includes; deleted tasks are hidden. */
   const own = (id: number, userId: number) =>
     and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt));
+
+  // Bonus 9: admins only. requireAuth (above, for /api/*) has set the role.
+  app.use("/api/admin/*", requireRole("admin"));
+
+  // Every user with the number of their (not deleted) tasks: one LEFT JOIN + GROUP BY, so
+  // a user with no tasks is listed too, with 0.
+  app.get("/api/admin/users", async (c) => {
+    const rows = await db
+      .select({
+        id: users.id,
+        email: users.email,
+        role: users.role,
+        createdAt: users.createdAt,
+        tasks: count(tasks.id),
+      })
+      .from(users)
+      .leftJoin(tasks, and(eq(tasks.userId, users.id), isNull(tasks.deletedAt)))
+      .groupBy(users.id)
+      .orderBy(asc(users.id));
+    return c.json({ items: rows });
+  });
 
   // Bonus 3: the number of my tasks per status, with ONE GROUP BY query.
   app.get("/api/me/summary", async (c) => {

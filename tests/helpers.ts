@@ -11,7 +11,8 @@ export async function freshApp(options: AppOptions = {}) {
   const file = await Deno.makeTempFile({ suffix: ".db" });
   const db = createDb(`file:${file}`);
   await migrate(db);
-  return createApp(db, options);
+  // Bonus 10: keep the test output clean; a test that checks the log passes its own `log`.
+  return createApp(db, { log: () => {}, ...options });
 }
 
 export type App = Awaited<ReturnType<typeof freshApp>>;

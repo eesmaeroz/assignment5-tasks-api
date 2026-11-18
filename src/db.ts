@@ -19,6 +19,7 @@ export async function migrate({ client }: Db) {
        id INTEGER PRIMARY KEY AUTOINCREMENT,
        email TEXT NOT NULL UNIQUE,
        password_hash TEXT NOT NULL,
+       role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
      )`,
     `CREATE TABLE IF NOT EXISTS sessions (

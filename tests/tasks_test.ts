@@ -160,7 +160,9 @@ Deno.test("an unknown route and a non-numeric id are 404 in the same shape", asy
   const unknown = await send(app, "GET", "/nothing-here");
   const badId = await send(app, "GET", "/api/tasks/abc", undefined, token);
   assertEquals(unknown.status, 404);
-  assertEquals(await unknown.json(), { error: "not found", issues: [] });
+  const body = await unknown.json();
+  assertEquals([body.error, body.issues], ["not found", []]);
+  assertEquals(body.requestId, unknown.headers.get("x-request-id"));
   assertEquals(badId.status, 404);
   assertEquals((await badId.json()).error, "task not found");
 });
