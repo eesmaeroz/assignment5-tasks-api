@@ -14,6 +14,7 @@ import {
 import { LoginLimiter } from "./ratelimit.ts";
 import { summaryGrouped } from "./summary.ts";
 import { signToken } from "./jwt.ts";
+import type { TaskCache } from "./cache.ts";
 
 // ---------------------------------------------------------------------------
 // Schemas: every body, query string and path id goes through one of these.
@@ -87,6 +88,8 @@ export type AppOptions = {
   log?: (line: string) => void;
   /** Bonus 7: the secret that signs the tokens (config.ts checks it in production). */
   jwtSecret?: string;
+  /** Bonus 16: cache for GET /api/tasks/:id. Without it every read goes to the database. */
+  cache?: TaskCache;
 };
 
 /** Build the whole application around a database, so tests can give it their own. */
@@ -97,6 +100,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
   const adminEmail = options.adminEmail?.toLowerCase();
   const log = options.log ?? ((line: string) => console.log(line));
   const jwtSecret = options.jwtSecret ?? "change-me";
+  const cache = options.cache;
   const app = new Hono<Env>();
 
   // Bonus 10: the first middleware. It gives every request an id, runs the rest, then
@@ -198,6 +202,12 @@ export function createApp(database: Db, options: AppOptions = {}) {
   const own = (id: number, userId: number) =>
     and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt));
 
+  // Bonus 14: done_at is set when a task becomes "done" and cleared when it is not done
+  // any more. COALESCE keeps the first time, so saving a done task again (for example to
+  // change its title) does not make it "newly done" and push the purge back.
+  const doneAtFor = (status: Task["status"]) =>
+    status === "done" ? sql`COALESCE(${tasks.doneAt}, strftime('%s','now'))` : null;
+
   // Bonus 9: admins only. requireAuth (above, for /api/*) has set the role.
   app.use("/api/admin/*", requireRole("admin"));
 
@@ -244,7 +254,11 @@ export function createApp(database: Db, options: AppOptions = {}) {
     const parsed = TaskBody.safeParse(await readJson(c));
     if (!parsed.success) return invalid(c, parsed.error);
     const [task] = await db.insert(tasks)
-      .values({ ...parsed.data, userId: c.get("userId") })
+      .values({
+        ...parsed.data,
+        userId: c.get("userId"),
+        doneAt: parsed.data.status === "done" ? sql`(strftime('%s','now'))` : null,
+      })
       .returning();
     return c.json(task, 201);
   });
@@ -252,8 +266,20 @@ export function createApp(database: Db, options: AppOptions = {}) {
   app.get("/api/tasks/:id", async (c) => {
     const id = TaskId.safeParse(c.req.param("id"));
     if (!id.success) return fail(c, 404, "task not found");
-    const [task] = await db.select().from(tasks).where(own(id.data, c.get("userId")));
-    return task ? c.json(task) : fail(c, 404, "task not found");
+    const userId = c.get("userId");
+    // Bonus 16: first the cache. Only a found task is cached, never a 404.
+    const cached = await cache?.get(userId, id.data);
+    if (cached) {
+      c.header("x-cache", "hit"); // so a curl -i shows where the answer came from
+      return c.json(cached);
+    }
+    const [task] = await db.select().from(tasks).where(own(id.data, userId));
+    if (!task) return fail(c, 404, "task not found");
+    if (cache) {
+      await cache.set(task);
+      c.header("x-cache", "miss");
+    }
+    return c.json(task);
   });
 
   app.put("/api/tasks/:id", async (c) => {
@@ -261,8 +287,11 @@ export function createApp(database: Db, options: AppOptions = {}) {
     if (!id.success) return fail(c, 404, "task not found");
     const parsed = TaskBody.safeParse(await readJson(c));
     if (!parsed.success) return invalid(c, parsed.error);
-    const [task] = await db.update(tasks).set(parsed.data)
+    const [task] = await db.update(tasks)
+      .set({ ...parsed.data, doneAt: doneAtFor(parsed.data.status) })
       .where(own(id.data, c.get("userId"))).returning();
+    // Bonus 16: the cached copy is old now. Deleted, not replaced: the next GET loads it.
+    await cache?.delete(c.get("userId"), id.data);
     return task ? c.json(task) : fail(c, 404, "task not found");
   });
 
@@ -273,6 +302,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
     const [task] = await db.update(tasks)
       .set({ deletedAt: sql`(strftime('%s','now'))` })
       .where(own(id.data, c.get("userId"))).returning({ id: tasks.id });
+    await cache?.delete(c.get("userId"), id.data);
     return task ? c.json({ ok: true }) : fail(c, 404, "task not found");
   });
 
@@ -288,6 +318,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
         isNotNull(tasks.deletedAt),
       ))
       .returning();
+    await cache?.delete(c.get("userId"), id.data);
     return task ? c.json(task) : fail(c, 404, "deleted task not found");
   });
 

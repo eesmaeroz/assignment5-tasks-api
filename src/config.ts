@@ -16,6 +16,13 @@ const ConfigSchema = z
     JWT_SECRET: z.string().min(1).default("change-me"),
     // Bonus 9: whoever registers with this email becomes an admin.
     ADMIN_EMAIL: z.email().optional(),
+    // Bonus 14: when the purge job runs (five cron fields). Every night at 03:00 by
+    // default; "* * * * *" (every minute) only to watch it work.
+    PURGE_CRON: z.string().trim()
+      .regex(/^\S+( \S+){4}$/, "must be a cron expression with five fields")
+      .default("0 3 * * *"),
+    // Bonus 16: where Deno KV keeps the cache (empty = Deno's default place).
+    KV_PATH: z.string().optional(),
   })
   .superRefine((c, ctx) => {
     if (c.APP_ENV !== "production") return;

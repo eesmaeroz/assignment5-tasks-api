@@ -2,13 +2,17 @@
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
 import * as schema from "./schema.ts";
+import type { Logger } from "drizzle-orm/logger";
 
 export type Db = ReturnType<typeof createDb>;
 
-/** Open a database. Tests pass "file::memory:" or a temporary file. */
-export function createDb(url: string) {
+/**
+ * Open a database. Tests pass a temporary file, and a Drizzle logger when they want to
+ * count the queries (Bonus 16).
+ */
+export function createDb(url: string, logger?: Logger) {
   const client = createClient({ url });
-  const db = drizzle(client, { schema });
+  const db = drizzle(client, { schema, logger });
   return { db, client };
 }
 
@@ -35,7 +39,8 @@ export async function migrate({ client }: Db) {
          CHECK (priority IN ('low', 'medium', 'high')),
        due_date TEXT,
        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-       deleted_at INTEGER
+       deleted_at INTEGER,
+       done_at INTEGER
      )`,
     // Bonus 4: the index for "my tasks" and "my tasks with this status".
     `CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status)`,

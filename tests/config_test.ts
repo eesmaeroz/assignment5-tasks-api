@@ -38,7 +38,17 @@ Deno.test("config: defaults for development", () => {
     PORT: 8000,
     DATABASE_URL: "file:./tasks.db",
     JWT_SECRET: "change-me",
+    PURGE_CRON: "0 3 * * *",
   });
+});
+
+Deno.test("config: PURGE_CRON must have five fields (Bonus 14)", () => {
+  assertEquals(loadConfig({ PURGE_CRON: "* * * * *" }).PURGE_CRON, "* * * * *");
+  assertThrows(
+    () => loadConfig({ PURGE_CRON: "every night" }),
+    ConfigError,
+    "PURGE_CRON: must be a cron expression with five fields",
+  );
 });
 
 Deno.test("config: values are read and converted", () => {

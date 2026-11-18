@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (62)
+    deno task test       # all tests (72)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
@@ -34,11 +34,11 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tables
 
-| Table      | Columns                                                                          | Notes                                                          |
-| ---------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `users`    | `id`, `email` (unique), `password_hash`, `created_at`                            | given; the email is stored in lower case                       |
-| `sessions` | (removed in Bonus 7)                                                             | was given: one row per login; a signed token (JWT) replaced it |
-| `tasks`    | `id`, `user_id` → users, `title`, `status`, `priority`, `due_date`, `created_at` | mine                                                           |
+| Table      | Columns                                                                                                   | Notes                                                          |
+| ---------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `users`    | `id`, `email` (unique), `password_hash`, `created_at`                                                     | given; the email is stored in lower case                       |
+| `sessions` | (removed in Bonus 7)                                                                                      | was given: one row per login; a signed token (JWT) replaced it |
+| `tasks`    | `id`, `user_id` → users, `title`, `status`, `priority`, `due_date`, `created_at`, `deleted_at`, `done_at` | mine (`deleted_at`: Bonus 2, `done_at`: Bonus 14)              |
 
 - `status` is `todo`, `in-progress` or `done` (default `todo`), `priority` is `low`,
   `medium` or `high` (default `medium`). In `schema.ts` they are `{ enum: [...] }`, so
@@ -102,17 +102,18 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tests
 
-62 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+72 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, and for the bonuses: 5 in `tests/softdelete_test.ts` (Bonus 2), 4 in
 `tests/summary_test.ts` (Bonus 3), 2 in `tests/index_test.ts` (Bonus 4), 7 in
 `tests/jwt_test.ts` (Bonus 7), 3 in `tests/seed_test.ts` (Bonus 5), 6 in
-`tests/roles_test.ts` (Bonus 9), 3 in `tests/logging_test.ts` (Bonus 10), 7 in
-`tests/config_test.ts` (Bonus 11) and 6 in `tests/ratelimit_test.ts` (Bonus 15). They
-cover everything the handout lists: duplicate email (409), wrong password (401), missing
-token (401), bad body (400), another user's task (404 for read, update **and** delete),
-invalid status (400) and pagination (page 2 holds the right task), plus filtering, bad
-query values, the 101-character title, an impossible due date, update and delete, and the
-404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+`tests/roles_test.ts` (Bonus 9), 3 in `tests/logging_test.ts` (Bonus 10), 8 in
+`tests/config_test.ts` (Bonus 11, one for Bonus 14), 5 in `tests/purge_test.ts` (Bonus
+14), 6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16).
+They cover everything the handout lists: duplicate email (409), wrong password (401),
+missing token (401), bad body (400), another user's task (404 for read, update **and**
+delete), invalid status (400) and pagination (page 2 holds the right task), plus
+filtering, bad query values, the 101-character title, an impossible due date, update and
+delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -207,11 +208,11 @@ $ curl -s -w '\n%{http_code}' localhost:8000/api/tasks
 ### GET /api/tasks/:id
 
 ```
-$ curl -s -w '\n%{http_code}' localhost:8000/api/tasks/1 -H "Authorization: Bearer $TOKEN"
+$ curl -s -w '\n%{http_code}' localhost:8011/api/tasks/1 -H "Authorization: Bearer $TOKEN"
 {"id":1,"userId":1,"title":"Calculus homework","status":"todo","priority":"high","dueDate":"2026-11-20","createdAt":1794857514}
 200
 
-$ curl -s -w '\n%{http_code}' localhost:8000/api/tasks/1 -H "Authorization: Bearer $MERY"
+$ curl -s -w '\n%{http_code}' localhost:8011/api/tasks/1 -H "Authorization: Bearer $MERY"
 {"error":"task not found","issues":[]}
 404
 ```
@@ -219,11 +220,11 @@ $ curl -s -w '\n%{http_code}' localhost:8000/api/tasks/1 -H "Authorization: Bear
 ### PUT /api/tasks/:id
 
 ```
-$ curl -s -w '\n%{http_code}' -X PUT localhost:8000/api/tasks/1 -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"title":"Calculus homework","status":"done","priority":"high","dueDate":"2026-11-20"}'
+$ curl -s -w '\n%{http_code}' -X PUT localhost:8011/api/tasks/1 -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"title":"Calculus homework","status":"done","priority":"high","dueDate":"2026-11-20"}'
 {"id":1,"userId":1,"title":"Calculus homework","status":"done","priority":"high","dueDate":"2026-11-20","createdAt":1794857514}
 200
 
-$ curl -s -w '\n%{http_code}' -X PUT localhost:8000/api/tasks/1 -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"title":"Calculus homework","dueDate":"2026-02-30"}'
+$ curl -s -w '\n%{http_code}' -X PUT localhost:8011/api/tasks/1 -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"title":"Calculus homework","dueDate":"2026-02-30"}'
 {"error":"validation failed","issues":[{"path":["dueDate"],"message":"Invalid ISO date"}]}
 400
 ```
@@ -382,7 +383,9 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 9: Roles (RBAC)
 - Bonus 10: Logging and request ids
 - Bonus 11: Health, readiness and configuration
+- Bonus 14: A background job with Deno.cron
 - Bonus 15: Rate limit on login
+- Bonus 16: A cache with Deno KV
 - Bonus 18: Continuous integration
 - Bonus 20: Git repository
 
@@ -863,6 +866,71 @@ Tests (`tests/config_test.ts`, 7 tests): `/healthz` is 200 without a token; `/re
 a bad `PORT`, `APP_ENV` and `DATABASE_URL` are all named in one error; production refuses
 the default secret, a missing secret and a short one, and accepts 32 characters.
 
+## Bonus 14: A background job with Deno.cron
+
+Bonus 14: A background job with Deno.cron
+
+Every night at 03:00 a job deletes the tasks that were done more than 30 days ago.
+
+- **When was a task done?** The table had no answer, so tasks got a new column `done_at`
+  (seconds). It is set when a task becomes `done` (on create or update) and set back to
+  `null` when it is moved out of `done`. On an update it is
+  `COALESCE(done_at, strftime('%s','now'))`, so saving a task that is already done (to
+  rename it, for example) keeps the first time. `created_at` would be wrong here: a task
+  made two months ago and finished yesterday must stay.
+- **The work is a plain function**, `purgeOldDone(db, days)` in `src/purge.ts`: one
+  `DELETE ... WHERE status = 'done' AND done_at IS NOT NULL AND done_at < now - days`. It
+  takes the time as an option, so a test does not depend on today's date. It is a real
+  DELETE, also for soft-deleted rows (Bonus 2): the job is there to free the space.
+- **Idempotent:** a second run finds nothing older than the limit, because those rows are
+  gone, and removes 0.
+- **Registered in `main.ts`**, with the schedule from the config (Bonus 11), so I can make
+  it run every minute without changing the code:
+
+  ```ts
+  Deno.cron("purge old done tasks", config.PURGE_CRON, async () => {
+    const removed = await purgeOldDone(db, 30, { cache });
+    console.log(
+      JSON.stringify({ time: new Date().toISOString(), job: "purge", removed }),
+    );
+  });
+  ```
+
+  `PURGE_CRON` defaults to `0 3 * * *`, and the config refuses a value that does not have
+  five fields. `--unstable-cron` is in the `dev`, `start`, `test` and `check` tasks.
+- **The cache (Bonus 16)** is cleared for every removed task, or a GET could still answer
+  with a purged task for up to a minute.
+- **Seed (Bonus 5):** two of the demo tasks were done 40 and 45 days ago, so the job has
+  something to remove.
+
+Real run (PowerShell on my laptop): seed, then start with the job every minute. The first
+run removed the two old demo tasks, the second one nothing:
+
+```
+PS> deno task seed
+Task seed deno run -A scripts/seed.ts
+seed: file:./tasks.db -> added 2 users and 20 tasks
+seed: log in as demo.esma@example.com or demo.mery@example.com, password demo-password-1
+PS> $env:PURGE_CRON="* * * * *"
+PS> deno task start
+Task start deno run -A --unstable-kv --unstable-cron src/main.ts
+APP_ENV=development, database file:./tasks.db
+Listening on http://localhost:8000/
+{"time":"2026-11-18T10:38:00.027Z","job":"purge","removed":2}
+{"time":"2026-11-18T10:39:00.009Z","job":"purge","removed":0}
+```
+
+Afterwards `Remove-Item Env:PURGE_CRON`, so the next start uses the nightly schedule
+again.
+
+Tests (`tests/purge_test.ts`, 5 tests): rows inserted directly with `done_at` 40, 31, 29
+and 0 days ago, an old `todo` and a soft-deleted task done 50 days ago; the purge removes
+exactly the three that are done and older than 30 days; a second run removes 0 and leaves
+the same rows; `done_at` is set on create with `done`, cleared on a move to `in-progress`
+and `null` for a `todo`; saving a done task again keeps its first `done_at`; and the purge
+also removes the cached copy, so the next GET is 404. One more test in
+`tests/config_test.ts` checks `PURGE_CRON`.
+
 ## Bonus 15: Rate limit on login
 
 Bonus 15: Rate limit on login
@@ -929,6 +997,68 @@ the minute; and a unit test that an old window starts again from 0.
 - **Memory.** An entry stays in the map until that email tries again after its window.
   Many different emails would make the map grow; a timer that deletes old entries would
   fix that.
+
+## Bonus 16: A cache with Deno KV
+
+Bonus 16: A cache with Deno KV
+
+`GET /api/tasks/:id` is answered from Deno KV for 60 seconds (`src/cache.ts`).
+
+- **KV is opened once**, in `main.ts` (`Deno.openKv(config.KV_PATH)`), and given to
+  `createApp` as a `TaskCache`. Without a cache (most tests) every read goes to the
+  database as before. `--unstable-kv` is in the `dev`, `start`, `test` and `check` tasks.
+- **The key is `["task", userId, taskId]`.** With the user id in the key, a request of
+  another user looks under a different key and can never get this user's task, even if the
+  ids are the same. A miss then goes to the database, where the owner check gives 404.
+- **On a read:** a hit is returned at once; a miss loads the task with the owner query and
+  stores it with `{ expireIn: 60_000 }`. A 404 is never cached. The answer has a header
+  `x-cache: hit` or `x-cache: miss`, so a curl shows where it came from.
+- **On a change:** `PUT`, `DELETE`, restore and the purge job (Bonus 14) call
+  `kv.delete(key)`. The entry is deleted, not replaced, so the next GET loads the new row.
+- **`expireIn` alone was not enough.** In a small test with `expireIn: 50`, `kv.get` still
+  returned the value after 120 ms: Deno KV removes expired keys later, in the background.
+  So every entry also stores its own end time (`until`), and `get` treats an old entry as
+  a miss. The clock is a parameter (like the rate limiter in Bonus 15), so the test can
+  move it 61 seconds forward without waiting.
+
+Real run (bash, on a second database with `PORT=8011`, after the seed): the first GET is a
+miss, the second a hit; after a PUT the next GET is a miss again and shows the new title:
+
+```
+$ curl -si localhost:8011/api/tasks/1 -H "authorization: Bearer $TOKEN"
+HTTP/1.1 200 OK
+x-cache: miss
+{"id":1,"userId":1,"title":"Calculus homework 6","status":"todo","priority":"high","dueDate":"2026-11-24","createdAt":1794996884,"deletedAt":null,"doneAt":null}
+$ curl -si localhost:8011/api/tasks/1 -H "authorization: Bearer $TOKEN"
+HTTP/1.1 200 OK
+x-cache: hit
+{"id":1,"userId":1,"title":"Calculus homework 6","status":"todo","priority":"high","dueDate":"2026-11-24","createdAt":1794996884,"deletedAt":null,"doneAt":null}
+$ curl -s -X PUT localhost:8011/api/tasks/1 -H "authorization: Bearer $TOKEN" \
+    -H "content-type: application/json" \
+    -d '{"title":"Calculus homework 6 (started)","priority":"high"}'
+$ curl -si localhost:8011/api/tasks/1 -H "authorization: Bearer $TOKEN"
+HTTP/1.1 200 OK
+x-cache: miss
+{"id":1,"userId":1,"title":"Calculus homework 6 (started)","status":"todo","priority":"high","dueDate":null,"createdAt":1794996884,"deletedAt":null,"doneAt":null}
+```
+
+(The PUT replaces the whole task, so the `dueDate` I did not send became `null`: the same
+thing as in log entry 5.)
+
+Tests (`tests/cache_test.ts`, 4 tests). A Drizzle logger counts the SELECTs on `tasks`:
+
+- **hit:** the first GET reads the database once (`x-cache: miss`), the second reads it 0
+  times (`x-cache: hit`) and gives the same body;
+- **invalidation:** after a PUT the GET shows the new title and had to read the database;
+  after a DELETE the GET is 404;
+- **the key includes the user:** after Esma's GET, Mery's GET of the same id is 404, and
+  KV holds the entry only under Esma's user id;
+- **60 seconds:** with the test clock, a GET after 59 s is a hit and after 61 s a miss.
+
+**What this cache does not do:** each server has its own KV file, so with two servers a
+change on one would not clear the cache of the other (Deno Deploy shares one KV, a laptop
+does not). The list `GET /api/tasks` is not cached at all, because one change would have
+to clear many pages.
 
 ## Bonus 18: Continuous integration
 

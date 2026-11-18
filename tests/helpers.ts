@@ -1,6 +1,7 @@
 // Meryem Esma Eröz, 2200005798
 import { type AppOptions, createApp } from "../src/app.ts";
 import { createDb, migrate } from "../src/db.ts";
+import type { Logger } from "drizzle-orm/logger";
 
 /**
  * Every test gets a fresh, empty database in its own temporary file.
@@ -8,11 +9,17 @@ import { createDb, migrate } from "../src/db.ts";
  * so a temporary file is the safe choice.)
  */
 export async function freshApp(options: AppOptions = {}) {
-  const file = await Deno.makeTempFile({ suffix: ".db" });
-  const db = createDb(`file:${file}`);
-  await migrate(db);
+  const db = await freshDb();
   // Bonus 10: keep the test output clean; a test that checks the log passes its own `log`.
   return createApp(db, { log: () => {}, ...options });
+}
+
+/** A fresh, empty database in a temporary file (also for tests that build the app). */
+export async function freshDb(logger?: Logger) {
+  const file = await Deno.makeTempFile({ suffix: ".db" });
+  const db = createDb(`file:${file}`, logger);
+  await migrate(db);
+  return db;
 }
 
 export type App = Awaited<ReturnType<typeof freshApp>>;

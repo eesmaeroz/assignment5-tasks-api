@@ -6,7 +6,10 @@ import { createDb, type Db, migrate } from "../src/db.ts";
 import { hashPassword } from "../src/auth.ts";
 import { type Task, tasks, users } from "../src/schema.ts";
 
-type NewTask = Pick<Task, "title" | "status" | "priority" | "dueDate">;
+type NewTask = Pick<Task, "title" | "status" | "priority" | "dueDate"> & {
+  /** Bonus 14: a done task can be finished long ago, so the purge job has work to do. */
+  doneDaysAgo?: number;
+};
 
 export const DEMO_PASSWORD = "demo-password-1";
 
@@ -73,6 +76,7 @@ export const DEMO_USERS: { email: string; tasks: NewTask[] }[] = [
         status: "done",
         priority: "low",
         dueDate: null,
+        doneDaysAgo: 45,
       },
       {
         title: "Prepare for the internship",
@@ -98,7 +102,13 @@ export const DEMO_USERS: { email: string; tasks: NewTask[] }[] = [
         priority: "medium",
         dueDate: null,
       },
-      { title: "Buy a new notebook", status: "done", priority: "low", dueDate: null },
+      {
+        title: "Buy a new notebook",
+        status: "done",
+        priority: "low",
+        dueDate: null,
+        doneDaysAgo: 40,
+      },
       { title: "Read the BFMC rules", status: "todo", priority: "medium", dueDate: null },
       { title: "Plan the weekend", status: "todo", priority: "low", dueDate: null },
       {
@@ -146,7 +156,13 @@ export async function seed(database: Db) {
       eq(tasks.userId, user.id),
     );
     if (n > 0) continue;
-    await db.insert(tasks).values(demo.tasks.map((t) => ({ ...t, userId: user.id })));
+    const now = Math.floor(Date.now() / 1000);
+    await db.insert(tasks).values(demo.tasks.map(({ doneDaysAgo, ...t }) => ({
+      ...t,
+      userId: user.id,
+      // done tasks get a done_at: today, or doneDaysAgo days back
+      doneAt: t.status === "done" ? now - (doneDaysAgo ?? 0) * 24 * 60 * 60 : null,
+    })));
     addedTasks += demo.tasks.length;
   }
   return { users: inserted.length, tasks: addedTasks };
