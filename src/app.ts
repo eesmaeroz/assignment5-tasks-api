@@ -12,6 +12,7 @@ import {
   requireAuth,
 } from "./auth.ts";
 import { LoginLimiter } from "./ratelimit.ts";
+import { summaryGrouped } from "./summary.ts";
 
 // ---------------------------------------------------------------------------
 // Schemas: every body, query string and path id goes through one of these.
@@ -149,6 +150,11 @@ export function createApp(database: Db, options: AppOptions = {}) {
   /** The owner condition that every task query includes; deleted tasks are hidden. */
   const own = (id: number, userId: number) =>
     and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt));
+
+  // Bonus 3: the number of my tasks per status, with ONE GROUP BY query.
+  app.get("/api/me/summary", async (c) => {
+    return c.json(await summaryGrouped(database, c.get("userId")));
+  });
 
   app.get("/api/tasks", async (c) => {
     const parsed = ListQuery.safeParse(c.req.query());
