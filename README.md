@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (72)
+    deno task test       # all tests (81)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
@@ -34,11 +34,11 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tables
 
-| Table      | Columns                                                                                                   | Notes                                                          |
-| ---------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `users`    | `id`, `email` (unique), `password_hash`, `created_at`                                                     | given; the email is stored in lower case                       |
-| `sessions` | (removed in Bonus 7)                                                                                      | was given: one row per login; a signed token (JWT) replaced it |
-| `tasks`    | `id`, `user_id` → users, `title`, `status`, `priority`, `due_date`, `created_at`, `deleted_at`, `done_at` | mine (`deleted_at`: Bonus 2, `done_at`: Bonus 14)              |
+| Table      | Columns                                                                                                                 | Notes                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `users`    | `id`, `email` (unique), `password_hash`, `created_at`                                                                   | given; the email is stored in lower case                                  |
+| `sessions` | (removed in Bonus 7)                                                                                                    | was given: one row per login; a signed token (JWT) replaced it            |
+| `tasks`    | `id`, `user_id` → users, `title`, `status`, `priority`, `due_date`, `created_at`, `deleted_at`, `done_at`, `attachment` | mine (`deleted_at`: Bonus 2, `done_at`: Bonus 14, `attachment`: Bonus 12) |
 
 - `status` is `todo`, `in-progress` or `done` (default `todo`), `priority` is `low`,
   `medium` or `high` (default `medium`). In `schema.ts` they are `{ enum: [...] }`, so
@@ -102,18 +102,19 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tests
 
-72 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+81 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, and for the bonuses: 5 in `tests/softdelete_test.ts` (Bonus 2), 4 in
 `tests/summary_test.ts` (Bonus 3), 2 in `tests/index_test.ts` (Bonus 4), 7 in
 `tests/jwt_test.ts` (Bonus 7), 3 in `tests/seed_test.ts` (Bonus 5), 6 in
 `tests/roles_test.ts` (Bonus 9), 3 in `tests/logging_test.ts` (Bonus 10), 8 in
-`tests/config_test.ts` (Bonus 11, one for Bonus 14), 5 in `tests/purge_test.ts` (Bonus
-14), 6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16).
-They cover everything the handout lists: duplicate email (409), wrong password (401),
-missing token (401), bad body (400), another user's task (404 for read, update **and**
-delete), invalid status (400) and pagination (page 2 holds the right task), plus
-filtering, bad query values, the 101-character title, an impossible due date, update and
-delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+`tests/config_test.ts` (Bonus 11, one for Bonus 14), 8 in `tests/upload_test.ts` (Bonus
+12), 6 in `tests/purge_test.ts` (Bonus 14, one for Bonus 12), 6 in
+`tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16). They cover
+everything the handout lists: duplicate email (409), wrong password (401), missing token
+(401), bad body (400), another user's task (404 for read, update **and** delete), invalid
+status (400) and pagination (page 2 holds the right task), plus filtering, bad query
+values, the 101-character title, an impossible due date, update and delete, and the 404
+shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -383,6 +384,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 9: Roles (RBAC)
 - Bonus 10: Logging and request ids
 - Bonus 11: Health, readiness and configuration
+- Bonus 12: File upload
 - Bonus 14: A background job with Deno.cron
 - Bonus 15: Rate limit on login
 - Bonus 16: A cache with Deno KV
@@ -865,6 +867,78 @@ Tests (`tests/config_test.ts`, 7 tests): `/healthz` is 200 without a token; `/re
 `/healthz` stays 200; the development defaults; values are converted (`"9001"` → `9001`);
 a bad `PORT`, `APP_ENV` and `DATABASE_URL` are all named in one error; production refuses
 the default secret, a missing secret and a short one, and accepts 32 characters.
+
+## Bonus 12: File upload
+
+Bonus 12: File upload
+
+A task can have one image (PNG or JPEG, at most 1 MB): `POST /api/tasks/:id/attachment`
+uploads it as the form field `file`, `GET /api/tasks/:id/attachment` downloads it.
+
+- **A nullable column `attachment`** holds the saved file name, or `null`.
+- **The order of the checks:** the task must be mine (404, and nothing is saved for
+  another user's task); then `c.req.parseBody()["file"]` must be a `File` (400, also for a
+  text field called `file`); at most 1 MB (413); `image/png` or `image/jpeg` (415).
+- **The type is checked twice.** The content-type of an upload is only what the client
+  says: `curl -F "file=@notes.txt;type=image/png"` sends a text file as `image/png`. So
+  the first bytes must also be the PNG signature (`89 50 4E 47 0D 0A 1A 0A`) or the JPEG
+  one (`FF D8 FF`), otherwise 415 (`src/upload.ts`).
+- **The body limit comes before `parseBody()`.** `parseBody()` reads the whole upload into
+  memory, so a 100 MB body would be read before the 1 MB check could refuse it. Hono's
+  `bodyLimit` middleware stops a body over 2 MB first (with the same 413); 2 MB because
+  the multipart wrapping adds a few bytes around a 1 MB file. The exact 1 MB is checked on
+  the file.
+- **Saved under a generated name**, `crypto.randomUUID()` plus `.png` or `.jpg`, with
+  `Deno.writeFile` in `UPLOAD_DIR` (default `./uploads`, a setting in `config.ts`). The
+  user's file name is never used on the disk: it could be `../../src/app.ts`, or the same
+  as another user's file. `uploads/` is in `.gitignore` and not in the zip.
+- **Download:** only through the owner query, so another user gets 404, and so does a
+  soft-deleted task. The content-type comes from the saved extension, with
+  `x-content-type-options: nosniff` so the browser does not guess another type.
+- **No files left behind:** a new image replaces the old file, and the purge job (Bonus
+  14) deletes the images of the tasks it removes. A soft delete keeps the file, because
+  the task can be restored.
+- **The cache (Bonus 16)** is cleared after an upload, because the row changed.
+
+Real run (bash; a server with `PORT=8012` and `UPLOAD_DIR=/tmp/b12/uploads`, and
+`pixel.png` a real 1×1 PNG of 69 bytes). On Windows the same works with `curl.exe -F`:
+
+```
+$ curl -s -X POST localhost:8012/auth/register -H "content-type: application/json" -d '{"email":"esma@example.com","password":"kediler123"}'
+{"id":1,"email":"esma@example.com","role":"user","createdAt":1794998693}
+$ TOKEN=... (login as before)
+$ curl -s -X POST localhost:8012/api/tasks/1/attachment -H "authorization: Bearer $TOKEN" -F file=@pixel.png
+{"id":1,"userId":1,"title":"Welcome! Add your first task","status":"todo","priority":"low","dueDate":null,"createdAt":1794998693,"deletedAt":null,"doneAt":null,"attachment":"5a2ed839-b6c1-4c8a-8dfc-a754c87ca4bd.png"}
+$ ls uploads
+5a2ed839-b6c1-4c8a-8dfc-a754c87ca4bd.png
+$ curl -s localhost:8012/api/tasks/1/attachment -H "authorization: Bearer $TOKEN" -D - -o back.png
+HTTP/1.1 200 OK
+content-type: image/png
+x-content-type-options: nosniff
+content-length: 69
+$ cmp pixel.png back.png && echo same bytes
+same bytes
+$ curl -s -X POST localhost:8012/api/tasks/1/attachment -H "authorization: Bearer $TOKEN" -F file=@notes.txt
+{"error":"only image/png or image/jpeg","issues":[]} -> 415
+$ curl -s -X POST localhost:8012/api/tasks/1/attachment -H "authorization: Bearer $TOKEN" -F "file=@notes.txt;type=image/png"
+{"error":"the file is not really image/png","issues":[]} -> 415
+$ curl -s -X POST localhost:8012/api/tasks/1/attachment -H "authorization: Bearer $TOKEN" -F file=@big.png
+{"error":"file too large (at most 1 MB)","issues":[]} -> 413
+$ curl -s -X POST localhost:8012/api/tasks/1/attachment -H "authorization: Bearer $TOKEN" -F file=hello
+{"error":"file required","issues":[{"path":["file"],"message":"send the image as the form field \"file\""}]} -> 400
+```
+
+Tests (`tests/upload_test.ts`, 8 tests, with `FormData` and
+`new File([...], "a.png",
+{ type: "image/png" })`, each app saving into its own temporary
+folder): upload and download give back the same bytes with `image/png`, and the file on
+disk has a UUID name, not `a.png`; a JPEG is saved as `.jpg`; an empty form and a text
+field are 400; a file of 1 000 001 bytes is 413, and a 3 MB body is 413 from `bodyLimit`;
+`text/plain` is 415, and a text file sent as `image/png` is 415; another user gets 404 for
+upload and download and nothing is saved; a second upload leaves only the new file; and a
+deleted task's image is 404. One more test in `tests/purge_test.ts` checks that the purge
+deletes the image of a removed task and keeps the others. In all failure tests the folder
+stays empty.
 
 ## Bonus 14: A background job with Deno.cron
 

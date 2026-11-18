@@ -33,6 +33,8 @@ export const tasks = sqliteTable("tasks", {
   // Bonus 14: when the task became "done" (seconds), null while it is not done. The purge
   // job needs this; created_at would delete an old task that was finished only yesterday.
   doneAt: integer("done_at"),
+  // Bonus 12: the generated file name of the attached image (uploads/<uuid>.png), or null.
+  attachment: text("attachment"),
 }, (t) => [
   // Bonus 4: every task query starts with "WHERE user_id = ?", often "AND status = ?".
   index("idx_tasks_user_status").on(t.userId, t.status),

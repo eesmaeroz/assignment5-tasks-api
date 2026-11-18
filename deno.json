@@ -16,6 +16,7 @@
   },
   "imports": {
     "hono": "npm:hono@^4",
+    "hono/body-limit": "npm:hono@^4/body-limit",
     "zod": "npm:zod@^4",
     "bcryptjs": "npm:bcryptjs@^3",
     "drizzle-orm": "npm:drizzle-orm@^0.44",

@@ -23,6 +23,8 @@ const ConfigSchema = z
       .default("0 3 * * *"),
     // Bonus 16: where Deno KV keeps the cache (empty = Deno's default place).
     KV_PATH: z.string().optional(),
+    // Bonus 12: the folder for attached images (kept out of Git by .gitignore).
+    UPLOAD_DIR: z.string().default("./uploads"),
   })
   .superRefine((c, ctx) => {
     if (c.APP_ENV !== "production") return;

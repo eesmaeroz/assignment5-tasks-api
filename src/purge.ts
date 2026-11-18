@@ -4,6 +4,7 @@ import { and, eq, isNotNull, lt } from "drizzle-orm";
 import type { Db } from "./db.ts";
 import { tasks } from "./schema.ts";
 import type { TaskCache } from "./cache.ts";
+import { removeSaved } from "./upload.ts";
 
 const DAY = 24 * 60 * 60; // seconds
 
@@ -12,6 +13,8 @@ export type PurgeOptions = {
   now?: number;
   /** Bonus 16: remove the cached copies too, or GET could still show a purged task. */
   cache?: TaskCache;
+  /** Bonus 12: the upload folder, so the images of removed tasks are deleted too. */
+  uploadDir?: string;
 };
 
 /**
@@ -32,7 +35,12 @@ export async function purgeOldDone(
       isNotNull(tasks.doneAt),
       lt(tasks.doneAt, cutoff),
     ))
-    .returning({ id: tasks.id, userId: tasks.userId });
-  for (const row of removed) await options.cache?.delete(row.userId, row.id);
+    .returning({ id: tasks.id, userId: tasks.userId, attachment: tasks.attachment });
+  for (const row of removed) {
+    await options.cache?.delete(row.userId, row.id);
+    if (options.uploadDir && row.attachment) {
+      await removeSaved(options.uploadDir, row.attachment);
+    }
+  }
   return removed.length;
 }

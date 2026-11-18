@@ -111,3 +111,19 @@ Deno.test("purgeOldDone also removes the cached copy (Bonus 16)", async () => {
   assertEquals(res.status, 404);
   kv.close();
 });
+
+Deno.test("purgeOldDone also deletes the image of a removed task (Bonus 12)", async () => {
+  const database = await dbWithTasks();
+  const dir = await Deno.makeTempDir();
+  await Deno.writeFile(`${dir}/old.png`, new Uint8Array([1]));
+  await Deno.writeFile(`${dir}/new.png`, new Uint8Array([2]));
+  await database.db.update(tasks).set({ attachment: "old.png" })
+    .where(eq(tasks.title, "done 40 days ago"));
+  await database.db.update(tasks).set({ attachment: "new.png" })
+    .where(eq(tasks.title, "done today"));
+
+  await purgeOldDone(database, 30, { now: NOW, uploadDir: dir });
+  const left: string[] = [];
+  for await (const entry of Deno.readDir(dir)) left.push(entry.name);
+  assertEquals(left, ["new.png"]);
+});

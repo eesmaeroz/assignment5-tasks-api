@@ -28,11 +28,12 @@ const app = createApp(db, {
   adminEmail: config.ADMIN_EMAIL,
   jwtSecret: config.JWT_SECRET,
   cache,
+  uploadDir: config.UPLOAD_DIR,
 });
 
 // Bonus 14: the nightly cleanup. Needs --unstable-cron (it is in the deno.json tasks).
 Deno.cron("purge old done tasks", config.PURGE_CRON, async () => {
-  const removed = await purgeOldDone(db, 30, { cache });
+  const removed = await purgeOldDone(db, 30, { cache, uploadDir: config.UPLOAD_DIR });
   console.log(JSON.stringify({ time: new Date().toISOString(), job: "purge", removed }));
 });
 

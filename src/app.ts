@@ -1,5 +1,6 @@
 // Meryem Esma Eröz, 2200005798
 import { type Context, Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { and, asc, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./db.ts";
@@ -15,6 +16,14 @@ import { LoginLimiter } from "./ratelimit.ts";
 import { summaryGrouped } from "./summary.ts";
 import { signToken } from "./jwt.ts";
 import type { TaskCache } from "./cache.ts";
+import {
+  extensionFor,
+  looksLike,
+  MAX_BYTES,
+  newName,
+  removeSaved,
+  typeOfSaved,
+} from "./upload.ts";
 
 // ---------------------------------------------------------------------------
 // Schemas: every body, query string and path id goes through one of these.
@@ -47,7 +56,7 @@ type Issue = { path: PropertyKey[]; message: string };
 
 function fail(
   c: Context<Env>,
-  status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 503,
+  status: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 429 | 500 | 503,
   error: string,
   issues: Issue[] = [],
 ) {
@@ -90,6 +99,8 @@ export type AppOptions = {
   jwtSecret?: string;
   /** Bonus 16: cache for GET /api/tasks/:id. Without it every read goes to the database. */
   cache?: TaskCache;
+  /** Bonus 12: where attached images are saved (default ./uploads). */
+  uploadDir?: string;
 };
 
 /** Build the whole application around a database, so tests can give it their own. */
@@ -101,6 +112,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
   const log = options.log ?? ((line: string) => console.log(line));
   const jwtSecret = options.jwtSecret ?? "change-me";
   const cache = options.cache;
+  const uploadDir = options.uploadDir ?? "./uploads";
   const app = new Hono<Env>();
 
   // Bonus 10: the first middleware. It gives every request an id, runs the rest, then
@@ -320,6 +332,74 @@ export function createApp(database: Db, options: AppOptions = {}) {
       .returning();
     await cache?.delete(c.get("userId"), id.data);
     return task ? c.json(task) : fail(c, 404, "deleted task not found");
+  });
+
+  // ----- Bonus 12: one image per task -------------------------------------------
+
+  app.post(
+    "/api/tasks/:id/attachment",
+    // parseBody() reads the whole body into memory, so a huge upload is stopped here,
+    // before it is read. 2 MB leaves room for the multipart wrapping around a 1 MB file;
+    // the exact 1 MB limit is checked on the file below.
+    bodyLimit({
+      maxSize: 2 * MAX_BYTES,
+      onError: (c) => fail(c as Context<Env>, 413, "file too large (at most 1 MB)"),
+    }),
+    async (c) => {
+      const id = TaskId.safeParse(c.req.param("id"));
+      if (!id.success) return fail(c, 404, "task not found");
+      const userId = c.get("userId");
+      // The owner check comes first: nothing is saved for somebody else's task.
+      const [task] = await db.select().from(tasks).where(own(id.data, userId));
+      if (!task) return fail(c, 404, "task not found");
+
+      const file = (await c.req.parseBody())["file"];
+      if (!(file instanceof File)) {
+        return fail(c, 400, "file required", [
+          { path: ["file"], message: 'send the image as the form field "file"' },
+        ]);
+      }
+      if (file.size > MAX_BYTES) return fail(c, 413, "file too large (at most 1 MB)");
+      if (!extensionFor(file.type)) {
+        return fail(c, 415, "only image/png or image/jpeg");
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!looksLike(bytes, file.type)) {
+        return fail(c, 415, `the file is not really ${file.type}`);
+      }
+
+      // Saved under a new name, never under file.name (that could be "../../x" or
+      // collide with another upload).
+      const name = newName(file.type);
+      await Deno.mkdir(uploadDir, { recursive: true });
+      await Deno.writeFile(`${uploadDir}/${name}`, bytes);
+      const [updated] = await db.update(tasks).set({ attachment: name })
+        .where(own(id.data, userId)).returning();
+      // A new image replaces the old one, so the old file is not left behind.
+      if (task.attachment) await removeSaved(uploadDir, task.attachment);
+      await cache?.delete(userId, id.data); // Bonus 16: the row changed
+      return c.json(updated, 201);
+    },
+  );
+
+  app.get("/api/tasks/:id/attachment", async (c) => {
+    const id = TaskId.safeParse(c.req.param("id"));
+    if (!id.success) return fail(c, 404, "attachment not found");
+    const [task] = await db.select().from(tasks).where(own(id.data, c.get("userId")));
+    if (!task?.attachment) return fail(c, 404, "attachment not found");
+    try {
+      const bytes = await Deno.readFile(`${uploadDir}/${task.attachment}`);
+      return c.body(bytes, 200, {
+        "content-type": typeOfSaved(task.attachment),
+        // the browser must not guess another type from the bytes
+        "x-content-type-options": "nosniff",
+      });
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return fail(c, 404, "attachment not found");
+      }
+      throw error;
+    }
   });
 
   // ----- Everything else ------------------------------------------------------
