@@ -22,7 +22,8 @@
     "drizzle-orm/libsql": "npm:drizzle-orm@^0.44/libsql",
     "drizzle-orm/sqlite-core": "npm:drizzle-orm@^0.44/sqlite-core",
     "@libsql/client": "npm:@libsql/client@^0.15",
-    "@std/assert": "jsr:@std/assert@^1"
+    "@std/assert": "jsr:@std/assert@^1",
+    "jose": "npm:jose@^6"
   },
   "fmt": {
     "lineWidth": 90

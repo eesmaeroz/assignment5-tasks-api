@@ -6,7 +6,6 @@ import type { Db } from "./db.ts";
 import { PRIORITIES, STATUSES, type Task, tasks, users } from "./schema.ts";
 import {
   checkPassword,
-  createSession,
   type Env,
   hashPassword,
   requireAuth,
@@ -14,6 +13,7 @@ import {
 } from "./auth.ts";
 import { LoginLimiter } from "./ratelimit.ts";
 import { summaryGrouped } from "./summary.ts";
+import { signToken } from "./jwt.ts";
 
 // ---------------------------------------------------------------------------
 // Schemas: every body, query string and path id goes through one of these.
@@ -85,6 +85,8 @@ export type AppOptions = {
   adminEmail?: string;
   /** Bonus 10: where the one-line JSON request logs go (default: console.log). */
   log?: (line: string) => void;
+  /** Bonus 7: the secret that signs the tokens (config.ts checks it in production). */
+  jwtSecret?: string;
 };
 
 /** Build the whole application around a database, so tests can give it their own. */
@@ -94,6 +96,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
   const welcomeTask = options.welcomeTask ?? defaultWelcome;
   const adminEmail = options.adminEmail?.toLowerCase();
   const log = options.log ?? ((line: string) => console.log(line));
+  const jwtSecret = options.jwtSecret ?? "change-me";
   const app = new Hono<Env>();
 
   // Bonus 10: the first middleware. It gives every request an id, runs the rest, then
@@ -181,12 +184,15 @@ export function createApp(database: Db, options: AppOptions = {}) {
       return fail(c, 401, "wrong email or password");
     }
     limiter.reset(email);
-    return c.json({ token: await createSession(database, user.id) });
+    // Bonus 7: a signed token instead of a session row: nothing is written to the database.
+    return c.json({
+      token: await signToken({ userId: user.id, role: user.role }, jwtSecret),
+    });
   });
 
   // ----- Tasks (only for the logged-in owner) ---------------------------------
 
-  app.use("/api/*", requireAuth(database));
+  app.use("/api/*", requireAuth(jwtSecret));
 
   /** The owner condition that every task query includes; deleted tasks are hidden. */
   const own = (id: number, userId: number) =>

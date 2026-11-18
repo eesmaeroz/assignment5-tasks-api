@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (55)
+    deno task test       # all tests (62)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
@@ -34,11 +34,11 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tables
 
-| Table      | Columns                                                                          | Notes                                        |
-| ---------- | -------------------------------------------------------------------------------- | -------------------------------------------- |
-| `users`    | `id`, `email` (unique), `password_hash`, `created_at`                            | given; the email is stored in lower case     |
-| `sessions` | `token`, `user_id` → users, `expires_at`                                         | given; one row per login, valid for one hour |
-| `tasks`    | `id`, `user_id` → users, `title`, `status`, `priority`, `due_date`, `created_at` | mine                                         |
+| Table      | Columns                                                                          | Notes                                                          |
+| ---------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `users`    | `id`, `email` (unique), `password_hash`, `created_at`                            | given; the email is stored in lower case                       |
+| `sessions` | (removed in Bonus 7)                                                             | was given: one row per login; a signed token (JWT) replaced it |
+| `tasks`    | `id`, `user_id` → users, `title`, `status`, `priority`, `due_date`, `created_at` | mine                                                           |
 
 - `status` is `todo`, `in-progress` or `done` (default `todo`), `priority` is `low`,
   `medium` or `high` (default `medium`). In `schema.ts` they are `{ enum: [...] }`, so
@@ -95,24 +95,24 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 - **Pagination** is `ORDER BY id` (a stable order, so page 2 never repeats an item from
   page 1), `LIMIT limit OFFSET (page - 1) * limit`, and a second `count()` query with the
   same `WHERE` (owner and optional status) for `total`.
-- **No string-built SQL.** All queries use Drizzle (`eq`, `and`, `count`), and the given
-  session functions use `?` placeholders, so user input is always a parameter.
+- **No string-built SQL.** All queries use Drizzle (`eq`, `and`, `count`), and every raw
+  SQL string uses `?` placeholders, so user input is always a parameter.
 - **A missing or broken JSON body** becomes `undefined` (`c.req.json().catch(...)`) and
   Zod answers 400; it never reaches `onError`.
 
 ### Tests
 
-55 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+62 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, and for the bonuses: 5 in `tests/softdelete_test.ts` (Bonus 2), 4 in
-`tests/summary_test.ts` (Bonus 3), 2 in `tests/index_test.ts` (Bonus 4), 3 in
-`tests/seed_test.ts` (Bonus 5), 6 in `tests/roles_test.ts` (Bonus 9), 3 in
-`tests/logging_test.ts` (Bonus 10), 7 in `tests/config_test.ts` (Bonus 11) and 6 in
-`tests/ratelimit_test.ts` (Bonus 15). They cover everything the handout lists: duplicate
-email (409), wrong password (401), missing token (401), bad body (400), another user's
-task (404 for read, update **and** delete), invalid status (400) and pagination (page 2
-holds the right task), plus filtering, bad query values, the 101-character title, an
-impossible due date, update and delete, and the 404 shape. `tests/helpers.ts` has
-`send()`, `login()` and `makeTask()`.
+`tests/summary_test.ts` (Bonus 3), 2 in `tests/index_test.ts` (Bonus 4), 7 in
+`tests/jwt_test.ts` (Bonus 7), 3 in `tests/seed_test.ts` (Bonus 5), 6 in
+`tests/roles_test.ts` (Bonus 9), 3 in `tests/logging_test.ts` (Bonus 10), 7 in
+`tests/config_test.ts` (Bonus 11) and 6 in `tests/ratelimit_test.ts` (Bonus 15). They
+cover everything the handout lists: duplicate email (409), wrong password (401), missing
+token (401), bad body (400), another user's task (404 for read, update **and** delete),
+invalid status (400) and pagination (page 2 holds the right task), plus filtering, bad
+query values, the 101-character title, an impossible due date, update and delete, and the
+404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -334,7 +334,9 @@ PS C:\Users\eesma> curl.exe -s localhost:8000/api/tasks -H "Authorization: Beare
 
 The session is not kept in the server's memory but as a row in the `sessions` table in
 `tasks.db`, so a restart does not log anybody out. The token stops working only after its
-`expires_at` (one hour), or if the row is deleted.
+`expires_at` (one hour), or if the row is deleted. (Since Bonus 7 the token is a JWT: it
+survives a restart too, but for another reason: it is checked with the secret, not looked
+up at all.)
 
 ### 5. The given UI's "advance" button erased my priority and due date
 
@@ -376,6 +378,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 3: Joins and the N+1 problem
 - Bonus 4: Indexes and EXPLAIN
 - Bonus 5: Seed data
+- Bonus 7: JWT instead of sessions
 - Bonus 9: Roles (RBAC)
 - Bonus 10: Logging and request ids
 - Bonus 11: Health, readiness and configuration
@@ -601,6 +604,69 @@ and has no demo tasks; a demo user can log in and gets a first page of 5 out of 
 `seed()` is exported and takes the database, so the tests run it on a temporary file
 instead of the real `tasks.db`.
 
+## Bonus 7: JWT instead of sessions
+
+Bonus 7: JWT instead of sessions
+
+`src/jwt.ts` uses `jose` (`"jose": "npm:jose@^6"` in `deno.json`):
+
+- `signToken({ userId, role }, secret)` makes a JWT signed with HS256 (HMAC-SHA-256): the
+  user id in `sub`, the role in a `role` claim (for Bonus 9), `iat`, and `exp` one hour
+  later.
+- `verifyToken(token, secret)` returns `{ userId, role }`, or `null` for a malformed,
+  tampered or expired token, or one signed with another secret. It accepts only `HS256`.
+
+Login now answers `{ token: await signToken(...) }` and writes nothing to the database.
+`requireAuth(secret)` calls `verifyToken` instead of looking a session up, and sets
+`userId` and `role` from the token. The given `sessions` table, `createSession` and
+`userIdFromToken` were removed. Every route and every test of the required part kept
+working unchanged, because they only use "log in, then send `Authorization: Bearer ...`".
+
+The secret is `config.JWT_SECRET` (Bonus 11): `main.ts` passes it to `createApp`, and in
+production the config refuses to start with the default `change-me` or with fewer than 32
+characters.
+
+Real run (bash). The middle part of the token is only base64, not encrypted: anybody can
+read it, nobody can change it without the secret. Changing the last five characters of the
+signature gives 401:
+
+```
+$ curl -s -X POST localhost:8000/auth/login -H 'content-type: application/json' -d '{"email":"esma@example.com","password":"kediler123"}'
+{"token":"eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoidXNlciIsInN1YiI6IjEiLCJpYXQiOjE3OTQ5OTYxMzcsImV4cCI6MTc5NDk5OTczN30.1EFv_VFt9i_HqwVOVcunuFsXJWliKTZpPV9B9vglSaI"}
+
+$ echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null; echo
+{"role":"user","sub":"1","iat":1794996137,"exp":1794999737}
+
+$ curl -s -w '\n%{http_code}' localhost:8000/api/me/summary -H "Authorization: Bearer $TOKEN"
+{"todo":1,"in-progress":0,"done":0,"total":1}
+200
+
+$ curl -s -w '\n%{http_code}' localhost:8000/api/me/summary -H "Authorization: Bearer ${TOKEN%?????}xxxxx"
+{"error":"unauthorized","issues":[]}
+401
+```
+
+**Sessions against JWT:**
+
+|                            | Session row (before)                                       | JWT (now)                                                                                                                      |
+| -------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Who calls?                 | look the token up in the `sessions` table on every request | check the signature with the secret: **no database lookup**                                                                    |
+| Several servers            | all of them need the same database to find the session     | any server with the secret can check it                                                                                        |
+| Log out / block a user now | delete the row: the token stops working at once            | **not possible** before `exp`; it stays valid up to one hour (unless every server keeps a block list, which is a lookup again) |
+| A role change (Bonus 9)    | can be read fresh on every request                         | is in the token, so it counts only after the next login (at most one hour)                                                     |
+| What is in the token       | a random id, means nothing outside the database            | the user id and role, readable by anybody (no secrets in a JWT)                                                                |
+| If the secret leaks        | nothing (no secret)                                        | anybody can make a token for any user, so the secret must be long and never in Git                                             |
+
+So a JWT saves a lookup per request and works across servers, and it costs the ability to
+take a login back. A short lifetime (one hour here) limits that cost.
+
+Tests (`tests/jwt_test.ts`, 7 tests): login returns a JWT with `sub`, `role` and exactly
+one hour to live; a token made directly with the secret reaches a route (only the
+signature counts); a **tampered** token (one character of the signature changed) is 401; a
+changed payload (`"role": "admin"` with the old signature) is 401 on the admin route; an
+**expired** token is 401; a token signed with **another secret** is 401; and `verifyToken`
+returns `null` for a tampered token, garbage and an empty string.
+
 ## Bonus 9: Roles (RBAC)
 
 Bonus 9: Roles (RBAC)
@@ -608,9 +674,10 @@ Bonus 9: Roles (RBAC)
 - `users` has a `role` column: `user` (the default) or `admin`, with a `CHECK` in the SQL
   and `{ enum: ["user", "admin"] }` in `schema.ts`. An old `tasks.db` must be deleted
   once, because `CREATE TABLE IF NOT EXISTS` does not add the column to an existing table.
-- `requireAuth` now reads the role from the `users` table next to the user id and stores
-  both (`c.set("role", ...)`). It reads the role on every request (not from the login), so
-  making somebody an admin, or taking it away, works at once.
+- `requireAuth` stores the role next to the user id (`c.set("role", ...)`). At first it
+  read the role from the `users` table on every request; since Bonus 7 the role is a claim
+  in the signed token, so no lookup is needed (the price: a role change counts after the
+  next login, see the table in Bonus 7).
 - `requireRole(...roles)` is a second middleware: **401** when nobody is logged in,
   **403** when somebody is logged in but their role is not in the list. It guards
   everything under `/api/admin/`.

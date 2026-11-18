@@ -13,12 +13,7 @@ export const users = sqliteTable("users", {
   createdAt: integer("created_at").notNull().default(sql`(strftime('%s','now'))`),
 });
 
-// The sessions table is given: a login makes a row, a token finds it.
-export const sessions = sqliteTable("sessions", {
-  token: text("token").primaryKey(),
-  userId: integer("user_id").notNull().references(() => users.id),
-  expiresAt: integer("expires_at").notNull(),
-});
+// Bonus 7: the given sessions table was removed; login now returns a signed token (JWT).
 
 export const STATUSES = ["todo", "in-progress", "done"] as const;
 export const PRIORITIES = ["low", "medium", "high"] as const;

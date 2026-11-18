@@ -17,7 +17,8 @@ const db = createDb(config.DATABASE_URL);
 await migrate(db);
 
 console.log(`APP_ENV=${config.APP_ENV}, database ${config.DATABASE_URL}`);
-Deno.serve(
-  { port: config.PORT },
-  createApp(db, { adminEmail: config.ADMIN_EMAIL }).fetch,
-);
+const app = createApp(db, {
+  adminEmail: config.ADMIN_EMAIL,
+  jwtSecret: config.JWT_SECRET,
+});
+Deno.serve({ port: config.PORT }, app.fetch);

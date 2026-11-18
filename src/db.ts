@@ -22,11 +22,7 @@ export async function migrate({ client }: Db) {
        role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
      )`,
-    `CREATE TABLE IF NOT EXISTS sessions (
-       token TEXT PRIMARY KEY,
-       user_id INTEGER NOT NULL REFERENCES users(id),
-       expires_at INTEGER NOT NULL
-     )`,
+    // Bonus 7: no sessions table any more; login returns a signed token (src/jwt.ts).
     // The CHECKs repeat the Zod rules in the database, so even a bad INSERT written by
     // hand cannot store an unknown status or priority.
     `CREATE TABLE IF NOT EXISTS tasks (
