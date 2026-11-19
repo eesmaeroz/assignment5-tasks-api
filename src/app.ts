@@ -1,11 +1,13 @@
 // Meryem Esma Eröz, 2200005798
-import { type Context, Hono } from "hono";
+import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { HTTPException } from "hono/http-exception";
+import { OpenAPIHono, type z } from "@hono/zod-openapi";
+import { swaggerUI } from "@hono/swagger-ui";
 import { and, asc, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { z } from "zod";
 import type { Db, DbPool } from "./db.ts";
 import { Pool, PoolTimeoutError } from "./pool.ts";
-import { PRIORITIES, STATUSES, type Task, tasks, users } from "./schema.ts";
+import { type Task, tasks, users } from "./schema.ts";
 import {
   checkPassword,
   type Env,
@@ -26,60 +28,50 @@ import {
   removeSaved,
   typeOfSaved,
 } from "./upload.ts";
-
-// ---------------------------------------------------------------------------
-// Schemas: every body, query string and path id goes through one of these.
-
-const Credentials = z.object({
-  email: z.email(),
-  password: z.string().min(8, "password must have at least 8 characters"),
-});
-
-const TaskBody = z.object({
-  title: z.string().trim().min(1).max(100),
-  status: z.enum(STATUSES).default("todo"),
-  priority: z.enum(PRIORITIES).default("medium"),
-  // My own field. A real calendar date is checked by z.iso.date().
-  dueDate: z.iso.date().nullable().default(null),
-});
-
-const ListQuery = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-  status: z.enum(STATUSES).optional(),
-});
-
-const TaskId = z.coerce.number().int().positive();
+import { routes } from "./openapi.ts";
 
 // ---------------------------------------------------------------------------
 // One error shape for every failure: { error, issues }.
+// (The Zod schemas that validate the requests are in openapi.ts, Bonus 8.)
 
-type Issue = { path: PropertyKey[]; message: string };
+type Issue = { path: (string | number)[]; message: string };
+type ErrorStatus = 400 | 401 | 403 | 404 | 409 | 413 | 415 | 429 | 500 | 503;
+// deno-lint-ignore no-explicit-any
+type AnyContext = Context<Env, any, any>;
 
-function fail(
-  c: Context<Env>,
-  status: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 429 | 500 | 503,
+function fail<S extends ErrorStatus>(
+  c: AnyContext,
+  status: S,
   error: string,
   issues: Issue[] = [],
 ) {
   // Bonus 10: a 404 or a 500 also names the request, so a user can report the id and it
   // can be found in the log.
-  if (status === 404 || status === 500) {
-    return c.json({ error, issues, requestId: c.get("requestId") }, status);
-  }
-  return c.json({ error, issues }, status);
+  const requestId = status === 404 || status === 500 ? c.get("requestId") : undefined;
+  return c.json(requestId ? { error, issues, requestId } : { error, issues }, status);
 }
 
-function invalid(c: Context<Env>, error: z.ZodError) {
-  const issues = error.issues.map((i) => ({ path: i.path, message: i.message }));
+function invalid(c: AnyContext, error: z.ZodError) {
+  const issues = error.issues.map((i) => ({
+    // a path part can be a symbol in Zod; JSON has only strings and numbers
+    path: i.path.map((p) => (typeof p === "symbol" ? String(p) : p)),
+    message: i.message,
+  }));
   return fail(c, 400, "validation failed", issues);
 }
 
-/** Read a JSON body; a missing or broken body becomes undefined, which Zod rejects. */
-const readJson = (c: Context<Env>): Promise<unknown> =>
-  c.req.json().catch(() => undefined);
+type ValidationResult = { target: string; success: boolean; error?: z.ZodError };
 
-// ---------------------------------------------------------------------------
+/**
+ * Bonus 8: what a failed validation answers. A bad body or query is 400 with the issues;
+ * a bad {id} in the path (like /api/tasks/abc) is 404, the same as an id that is not mine.
+ */
+const onInvalid =
+  (notFound = "not found") => (result: ValidationResult, c: AnyContext) => {
+    if (result.success) return;
+    if (result.target === "param") return fail(c, 404, notFound);
+    return invalid(c, result.error as z.ZodError);
+  };
 
 /** The first task every new user gets (Bonus 2). A test can replace it. */
 export type WelcomeTask = (userId: number) => Pick<Task, "userId" | "title" | "priority">;
@@ -125,7 +117,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
   const cache = options.cache;
   const uploadDir = options.uploadDir ?? "./uploads";
   const live = options.live ?? new LiveHub();
-  const app = new Hono<Env>();
+  const app = new OpenAPIHono<Env>({ defaultHook: onInvalid() });
 
   // Bonus 10: the first middleware. It gives every request an id, runs the rest, then
   // writes ONE JSON line. Only these fields are logged: never a body, a header or a query
@@ -146,35 +138,54 @@ export function createApp(database: Db, options: AppOptions = {}) {
     }));
   });
 
-  app.get("/health", (c) => c.json({ ok: true }));
+  app.openapi(routes.health, (c) => c.json({ ok: true }, 200));
 
   // Bonus 11: liveness and readiness for a platform (Docker, Kubernetes, a load balancer).
   // /healthz: the process is up and answers. It never touches the database.
-  app.get("/healthz", (c) => c.json({ ok: true }));
+  app.openapi(routes.healthz, (c) => c.json({ ok: true }, 200));
   // /readyz: the process can do real work, so the database must answer a query.
-  app.get("/readyz", async (c) => {
+  app.openapi(routes.readyz, async (c) => {
     try {
       await withDb((db) => db.run(sql`SELECT 1`));
-      return c.json({ ready: true });
+      return c.json({ ready: true }, 200);
     } catch (error) {
       console.error("readyz:", error);
       return fail(c, 503, "database not reachable");
     }
   });
 
+  // ----- Bonus 8: the API describes itself -------------------------------------
+
+  app.openAPIRegistry.registerComponent("securitySchemes", "Bearer", {
+    type: "http",
+    scheme: "bearer",
+    bearerFormat: "JWT",
+  });
+  app.doc("/openapi.json", {
+    openapi: "3.0.0",
+    info: {
+      title: "Tasks API",
+      version: "1.0.0",
+      description:
+        "SEN0415 Assignment 5, Meryem Esma Eröz. Log in with POST /auth/login, " +
+        "then press Authorize and paste the token.",
+    },
+  });
+  // The docs page: Swagger UI, which loads /openapi.json in the browser.
+  app.get("/docs", swaggerUI({ url: "/openapi.json" }));
+
   // ----- Auth ---------------------------------------------------------------
 
-  app.post("/auth/register", async (c) => {
-    const parsed = Credentials.safeParse(await readJson(c));
-    if (!parsed.success) return invalid(c, parsed.error);
-    const email = parsed.data.email.toLowerCase();
+  app.openapi(routes.register, async (c) => {
+    const input = c.req.valid("json");
+    const email = input.email.toLowerCase();
 
     const [existing] = await withDb((db) =>
       db.select({ id: users.id }).from(users).where(eq(users.email, email))
     );
     if (existing) return fail(c, 409, "email already registered");
 
-    const passwordHash = await hashPassword(parsed.data.password);
+    const passwordHash = await hashPassword(input.password);
     // Bonus 2: the user and the welcome task are created in ONE transaction. If the second
     // insert fails, the first one is rolled back, so there is never a user without it.
     const user = await withDb((db) =>
@@ -195,10 +206,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
     return c.json(user, 201);
   });
 
-  app.post("/auth/login", async (c) => {
-    const parsed = Credentials.safeParse(await readJson(c));
-    if (!parsed.success) return invalid(c, parsed.error);
-    const email = parsed.data.email.toLowerCase();
+  app.openapi(routes.login, async (c) => {
+    const input = c.req.valid("json");
+    const email = input.email.toLowerCase();
 
     // Bonus 15: checked BEFORE the password, so a blocked email gets 429 even when the
     // password is right (otherwise the 429 would tell an attacker the guess was correct).
@@ -212,15 +222,14 @@ export function createApp(database: Db, options: AppOptions = {}) {
       db.select().from(users).where(eq(users.email, email))
     );
     // The same answer for an unknown email and a wrong password.
-    if (!user || !(await checkPassword(parsed.data.password, user.passwordHash))) {
+    if (!user || !(await checkPassword(input.password, user.passwordHash))) {
       limiter.recordFailure(email);
       return fail(c, 401, "wrong email or password");
     }
     limiter.reset(email);
     // Bonus 7: a signed token instead of a session row: nothing is written to the database.
-    return c.json({
-      token: await signToken({ userId: user.id, role: user.role }, jwtSecret),
-    });
+    const token = await signToken({ userId: user.id, role: user.role }, jwtSecret);
+    return c.json({ token }, 200);
   });
 
   // ----- Bonus 13: live updates over a WebSocket --------------------------------
@@ -229,8 +238,8 @@ export function createApp(database: Db, options: AppOptions = {}) {
   // comes in the query: /ws?token=... It is checked like requireAuth does, BEFORE the
   // upgrade, so a bad token never gets a socket. (The request log only writes the path,
   // never the query, so the token does not end up in the log.)
-  app.get("/ws", async (c) => {
-    const user = await verifyToken(c.req.query("token") ?? "", jwtSecret);
+  app.openapi(routes.ws, async (c) => {
+    const user = await verifyToken(c.req.valid("query").token ?? "", jwtSecret);
     if (user === null) return fail(c, 401, "unauthorized");
     if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
       return fail(c, 400, "expected a WebSocket upgrade");
@@ -260,7 +269,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
 
   // Every user with the number of their (not deleted) tasks: one LEFT JOIN + GROUP BY, so
   // a user with no tasks is listed too, with 0.
-  app.get("/api/admin/users", async (c) => {
+  app.openapi(routes.adminUsers, async (c) => {
     const rows = await withDb((db) =>
       db.select({
         id: users.id,
@@ -274,20 +283,17 @@ export function createApp(database: Db, options: AppOptions = {}) {
         .groupBy(users.id)
         .orderBy(asc(users.id))
     );
-    return c.json({ items: rows });
+    return c.json({ items: rows }, 200);
   });
 
   // Bonus 3: the number of my tasks per status, with ONE GROUP BY query.
-  app.get("/api/me/summary", async (c) => {
+  app.openapi(routes.summary, async (c) => {
     const userId = c.get("userId");
-    return c.json(await pool.use((d) => summaryGrouped(d, userId)));
+    return c.json(await pool.use((d) => summaryGrouped(d, userId)), 200);
   });
 
-  app.get("/api/tasks", async (c) => {
-    const parsed = ListQuery.safeParse(c.req.query());
-    if (!parsed.success) return invalid(c, parsed.error);
-    const { page, limit, status } = parsed.data;
-
+  app.openapi(routes.listTasks, async (c) => {
+    const { page, limit, status } = c.req.valid("query");
     const where = and(
       eq(tasks.userId, c.get("userId")),
       isNull(tasks.deletedAt),
@@ -300,158 +306,143 @@ export function createApp(database: Db, options: AppOptions = {}) {
       const [{ total }] = await db.select({ total: count() }).from(tasks).where(where);
       return { items, total };
     });
-    return c.json({ items, page, limit, total });
+    return c.json({ items, page, limit, total }, 200);
   });
 
-  app.post("/api/tasks", async (c) => {
-    const parsed = TaskBody.safeParse(await readJson(c));
-    if (!parsed.success) return invalid(c, parsed.error);
+  app.openapi(routes.createTask, async (c) => {
+    const input = c.req.valid("json");
+    const userId = c.get("userId");
     const [task] = await withDb((db) =>
       db.insert(tasks).values({
-        ...parsed.data,
-        userId: c.get("userId"),
-        doneAt: parsed.data.status === "done" ? sql`(strftime('%s','now'))` : null,
+        ...input,
+        userId,
+        doneAt: input.status === "done" ? sql`(strftime('%s','now'))` : null,
       }).returning()
     );
     live.send(task.userId, { type: "created", task });
     return c.json(task, 201);
   });
 
-  app.get("/api/tasks/:id", async (c) => {
-    const id = TaskId.safeParse(c.req.param("id"));
-    if (!id.success) return fail(c, 404, "task not found");
+  app.openapi(routes.getTask, async (c) => {
+    const { id } = c.req.valid("param");
     const userId = c.get("userId");
     // Bonus 16: first the cache. Only a found task is cached, never a 404.
-    const cached = await cache?.get(userId, id.data);
+    const cached = await cache?.get(userId, id);
     if (cached) {
       c.header("x-cache", "hit"); // so a curl -i shows where the answer came from
-      return c.json(cached);
+      return c.json(cached, 200);
     }
-    const [task] = await withDb((db) =>
-      db.select().from(tasks).where(own(id.data, userId))
-    );
+    const [task] = await withDb((db) => db.select().from(tasks).where(own(id, userId)));
     if (!task) return fail(c, 404, "task not found");
     if (cache) {
       await cache.set(task);
       c.header("x-cache", "miss");
     }
-    return c.json(task);
-  });
+    return c.json(task, 200);
+  }, onInvalid("task not found"));
 
-  app.put("/api/tasks/:id", async (c) => {
-    const id = TaskId.safeParse(c.req.param("id"));
-    if (!id.success) return fail(c, 404, "task not found");
-    const parsed = TaskBody.safeParse(await readJson(c));
-    if (!parsed.success) return invalid(c, parsed.error);
+  app.openapi(routes.updateTask, async (c) => {
+    const { id } = c.req.valid("param");
+    const input = c.req.valid("json");
     const userId = c.get("userId");
     const [task] = await withDb((db) =>
       db.update(tasks)
-        .set({ ...parsed.data, doneAt: doneAtFor(parsed.data.status) })
-        .where(own(id.data, userId)).returning()
+        .set({ ...input, doneAt: doneAtFor(input.status) })
+        .where(own(id, userId)).returning()
     );
     // Bonus 16: the cached copy is old now. Deleted, not replaced: the next GET loads it.
-    await cache?.delete(c.get("userId"), id.data);
+    await cache?.delete(userId, id);
     if (!task) return fail(c, 404, "task not found");
     live.send(task.userId, { type: "updated", task });
-    return c.json(task);
-  });
+    return c.json(task, 200);
+  }, onInvalid("task not found"));
 
-  app.delete("/api/tasks/:id", async (c) => {
-    const id = TaskId.safeParse(c.req.param("id"));
-    if (!id.success) return fail(c, 404, "task not found");
-    // Bonus 2: soft delete. The row stays; it only gets a deleted_at time.
+  app.openapi(routes.deleteTask, async (c) => {
+    const { id } = c.req.valid("param");
     const userId = c.get("userId");
+    // Bonus 2: soft delete. The row stays; it only gets a deleted_at time.
     const [task] = await withDb((db) =>
       db.update(tasks)
         .set({ deletedAt: sql`(strftime('%s','now'))` })
-        .where(own(id.data, userId)).returning({ id: tasks.id })
+        .where(own(id, userId)).returning({ id: tasks.id })
     );
-    await cache?.delete(c.get("userId"), id.data);
+    await cache?.delete(userId, id);
     if (!task) return fail(c, 404, "task not found");
-    live.send(c.get("userId"), { type: "deleted", task: { id: task.id } });
-    return c.json({ ok: true });
-  });
+    live.send(userId, { type: "deleted", task: { id: task.id } });
+    return c.json({ ok: true }, 200);
+  }, onInvalid("task not found"));
 
-  app.post("/api/tasks/:id/restore", async (c) => {
-    const id = TaskId.safeParse(c.req.param("id"));
-    if (!id.success) return fail(c, 404, "deleted task not found");
-    // Only a task of this user that IS deleted can be restored.
+  app.openapi(routes.restoreTask, async (c) => {
+    const { id } = c.req.valid("param");
     const userId = c.get("userId");
+    // Only a task of this user that IS deleted can be restored.
     const [task] = await withDb((db) =>
       db.update(tasks)
         .set({ deletedAt: null })
-        .where(and(
-          eq(tasks.id, id.data),
-          eq(tasks.userId, userId),
-          isNotNull(tasks.deletedAt),
-        ))
+        .where(
+          and(eq(tasks.id, id), eq(tasks.userId, userId), isNotNull(tasks.deletedAt)),
+        )
         .returning()
     );
-    await cache?.delete(c.get("userId"), id.data);
+    await cache?.delete(userId, id);
     if (!task) return fail(c, 404, "deleted task not found");
     live.send(task.userId, { type: "restored", task });
-    return c.json(task);
-  });
+    return c.json(task, 200);
+  }, onInvalid("deleted task not found"));
 
   // ----- Bonus 12: one image per task -------------------------------------------
 
-  app.post(
+  // parseBody() reads the whole body into memory, so a huge upload is stopped here, before
+  // it is read. 2 MB leaves room for the multipart wrapping around a 1 MB file; the exact
+  // 1 MB limit is checked on the file below.
+  app.on(
+    "POST",
     "/api/tasks/:id/attachment",
-    // parseBody() reads the whole body into memory, so a huge upload is stopped here,
-    // before it is read. 2 MB leaves room for the multipart wrapping around a 1 MB file;
-    // the exact 1 MB limit is checked on the file below.
     bodyLimit({
       maxSize: 2 * MAX_BYTES,
-      onError: (c) => fail(c as Context<Env>, 413, "file too large (at most 1 MB)"),
+      onError: (c) => fail(c, 413, "file too large (at most 1 MB)"),
     }),
-    async (c) => {
-      const id = TaskId.safeParse(c.req.param("id"));
-      if (!id.success) return fail(c, 404, "task not found");
-      const userId = c.get("userId");
-      // The owner check comes first: nothing is saved for somebody else's task.
-      const [task] = await withDb((db) =>
-        db.select().from(tasks).where(own(id.data, userId))
-      );
-      if (!task) return fail(c, 404, "task not found");
-
-      const file = (await c.req.parseBody())["file"];
-      if (!(file instanceof File)) {
-        return fail(c, 400, "file required", [
-          { path: ["file"], message: 'send the image as the form field "file"' },
-        ]);
-      }
-      if (file.size > MAX_BYTES) return fail(c, 413, "file too large (at most 1 MB)");
-      if (!extensionFor(file.type)) {
-        return fail(c, 415, "only image/png or image/jpeg");
-      }
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      if (!looksLike(bytes, file.type)) {
-        return fail(c, 415, `the file is not really ${file.type}`);
-      }
-
-      // Saved under a new name, never under file.name (that could be "../../x" or
-      // collide with another upload).
-      const name = newName(file.type);
-      await Deno.mkdir(uploadDir, { recursive: true });
-      await Deno.writeFile(`${uploadDir}/${name}`, bytes);
-      const [updated] = await withDb((db) =>
-        db.update(tasks).set({ attachment: name }).where(own(id.data, userId)).returning()
-      );
-      // A new image replaces the old one, so the old file is not left behind.
-      if (task.attachment) await removeSaved(uploadDir, task.attachment);
-      await cache?.delete(userId, id.data); // Bonus 16: the row changed
-      live.send(userId, { type: "updated", task: updated });
-      return c.json(updated, 201);
-    },
   );
 
-  app.get("/api/tasks/:id/attachment", async (c) => {
-    const id = TaskId.safeParse(c.req.param("id"));
-    if (!id.success) return fail(c, 404, "attachment not found");
+  app.openapi(routes.uploadAttachment, async (c) => {
+    const { id } = c.req.valid("param");
     const userId = c.get("userId");
-    const [task] = await withDb((db) =>
-      db.select().from(tasks).where(own(id.data, userId))
+    // The owner check comes first: nothing is saved for somebody else's task.
+    const [task] = await withDb((db) => db.select().from(tasks).where(own(id, userId)));
+    if (!task) return fail(c, 404, "task not found");
+
+    const file = (await c.req.parseBody())["file"];
+    if (!(file instanceof File)) {
+      return fail(c, 400, "file required", [
+        { path: ["file"], message: 'send the image as the form field "file"' },
+      ]);
+    }
+    if (file.size > MAX_BYTES) return fail(c, 413, "file too large (at most 1 MB)");
+    if (!extensionFor(file.type)) return fail(c, 415, "only image/png or image/jpeg");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!looksLike(bytes, file.type)) {
+      return fail(c, 415, `the file is not really ${file.type}`);
+    }
+
+    // Saved under a new name, never under file.name (that could be "../../x" or collide
+    // with another upload).
+    const name = newName(file.type);
+    await Deno.mkdir(uploadDir, { recursive: true });
+    await Deno.writeFile(`${uploadDir}/${name}`, bytes);
+    const [updated] = await withDb((db) =>
+      db.update(tasks).set({ attachment: name }).where(own(id, userId)).returning()
     );
+    // A new image replaces the old one, so the old file is not left behind.
+    if (task.attachment) await removeSaved(uploadDir, task.attachment);
+    await cache?.delete(userId, id); // Bonus 16: the row changed
+    live.send(userId, { type: "updated", task: updated });
+    return c.json(updated, 201);
+  }, onInvalid("task not found"));
+
+  app.openapi(routes.getAttachment, async (c) => {
+    const { id } = c.req.valid("param");
+    const userId = c.get("userId");
+    const [task] = await withDb((db) => db.select().from(tasks).where(own(id, userId)));
     if (!task?.attachment) return fail(c, 404, "attachment not found");
     try {
       const bytes = await Deno.readFile(`${uploadDir}/${task.attachment}`);
@@ -466,7 +457,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
       }
       throw error;
     }
-  });
+  }, onInvalid("attachment not found"));
 
   // ----- Everything else ------------------------------------------------------
 
@@ -477,6 +468,16 @@ export function createApp(database: Db, options: AppOptions = {}) {
     if (err instanceof PoolTimeoutError) {
       c.header("Retry-After", "1");
       return fail(c, 503, "database busy, try again");
+    }
+    // Bonus 8: the validators of @hono/zod-openapi throw these two, in our error shape:
+    // a body that is not JSON at all (400), and a body with another content-type (415).
+    if (err instanceof HTTPException && err.status === 400) {
+      return fail(c, 400, "validation failed", [
+        { path: [], message: "the body must be valid JSON" },
+      ]);
+    }
+    if (err instanceof HTTPException && err.status === 415) {
+      return fail(c, 415, "send the body as application/json");
     }
     console.error(err); // the details go to the log, never to the client
     return fail(c, 500, "internal error");

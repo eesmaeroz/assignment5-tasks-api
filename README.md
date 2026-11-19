@@ -8,8 +8,8 @@ user sees and changes only their own tasks.
 ## Run it
 
     cp .env.example .env
-    deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (91)
+    deno task dev        # API on http://localhost:8000, docs on http://localhost:8000/docs
+    deno task test       # all tests (97)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
@@ -99,25 +99,28 @@ button in the form, `type="button"` for the others), because `deno lint` reporte
   same `WHERE` (owner and optional status) for `total`.
 - **No string-built SQL.** All queries use Drizzle (`eq`, `and`, `count`), and every raw
   SQL string uses `?` placeholders, so user input is always a parameter.
-- **A missing or broken JSON body** becomes `undefined` (`c.req.json().catch(...)`) and
-  Zod answers 400; it never reaches `onError`.
+- **A missing or broken JSON body** is 400 in the same error shape. At first this was
+  `c.req.json().catch(() => undefined)`, which Zod then refused; since Bonus 8 the
+  validator of `@hono/zod-openapi` checks the body, and `onError` turns its exception into
+  our 400 (and 415 for a body that is not `application/json`).
 
 ### Tests
 
-91 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+97 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, and for the bonuses: 5 in `tests/softdelete_test.ts` (Bonus 2), 4 in
 `tests/summary_test.ts` (Bonus 3), 6 in `tests/pool_test.ts` (Bonus 6), 2 in
-`tests/index_test.ts` (Bonus 4), 7 in `tests/jwt_test.ts` (Bonus 7), 3 in
-`tests/seed_test.ts` (Bonus 5), 6 in `tests/roles_test.ts` (Bonus 9), 3 in
-`tests/logging_test.ts` (Bonus 10), 8 in `tests/config_test.ts` (Bonus 11, one for Bonus
-14 and the defaults of 6, 12 and 16), 8 in `tests/upload_test.ts` (Bonus 12), 4 in
-`tests/live_test.ts` (Bonus 13), 6 in `tests/purge_test.ts` (Bonus 14, one for Bonus 12),
-6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16). They
-cover everything the handout lists: duplicate email (409), wrong password (401), missing
-token (401), bad body (400), another user's task (404 for read, update **and** delete),
-invalid status (400) and pagination (page 2 holds the right task), plus filtering, bad
-query values, the 101-character title, an impossible due date, update and delete, and the
-404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+`tests/index_test.ts` (Bonus 4), 7 in `tests/jwt_test.ts` (Bonus 7), 6 in
+`tests/openapi_test.ts` (Bonus 8), 3 in `tests/seed_test.ts` (Bonus 5), 6 in
+`tests/roles_test.ts` (Bonus 9), 3 in `tests/logging_test.ts` (Bonus 10), 8 in
+`tests/config_test.ts` (Bonus 11, one for Bonus 14 and the defaults of 6, 12 and 16), 8 in
+`tests/upload_test.ts` (Bonus 12), 4 in `tests/live_test.ts` (Bonus 13), 6 in
+`tests/purge_test.ts` (Bonus 14, one for Bonus 12), 6 in `tests/ratelimit_test.ts`
+(Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16). They cover everything the handout
+lists: duplicate email (409), wrong password (401), missing token (401), bad body (400),
+another user's task (404 for read, update **and** delete), invalid status (400) and
+pagination (page 2 holds the right task), plus filtering, bad query values, the
+101-character title, an impossible due date, update and delete, and the 404 shape.
+`tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -385,6 +388,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 5: Seed data
 - Bonus 6: A connection pool (option B: my own pool on SQLite)
 - Bonus 7: JWT instead of sessions
+- Bonus 8: OpenAPI and a docs page
 - Bonus 9: Roles (RBAC)
 - Bonus 10: Logging and request ids
 - Bonus 11: Health, readiness and configuration
@@ -753,6 +757,90 @@ signature counts); a **tampered** token (one character of the signature changed)
 changed payload (`"role": "admin"` with the old signature) is 401 on the admin route; an
 **expired** token is 401; a token signed with **another secret** is 401; and `verifyToken`
 returns `null` for a tampered token, garbage and an empty string.
+
+## Bonus 8: OpenAPI and a docs page
+
+Bonus 8: OpenAPI and a docs page
+
+`GET /openapi.json` is the OpenAPI 3.0 document of the whole API, and `GET /docs` is a
+Swagger UI page that loads it (`@hono/swagger-ui`).
+
+- **One set of schemas.** The app is now an `OpenAPIHono` (`@hono/zod-openapi`). Every
+  route is described once in `src/openapi.ts` with `createRoute` (method, path, request
+  body, query and path parameters, and every response) and registered in `src/app.ts` with
+  `app.openapi(route, handler)`. The request schemas (`Credentials`, `TaskBody`,
+  `ListQuery`, `TaskIdParam`) are the same Zod objects as before: they validate the
+  request **and** become the document, so the docs cannot say `maxLength: 100` while the
+  code allows 200. The handlers read `c.req.valid("json")`, `c.req.valid("query")` and
+  `c.req.valid("param")` instead of calling `safeParse` themselves.
+- **The same error shape as before.** A `defaultHook` turns a failed validation into
+  `{ error: "validation failed", issues }` (400). A bad `{id}` in the path
+  (`/api/tasks/abc`) is still **404** like an id that is not mine, not 400: each `{id}`
+  route has its own hook that answers 404 for a failed `param`. A body that is not JSON at
+  all is 400 (the validator throws, `onError` answers in our shape). One change: a body
+  with another content-type (`text/plain`) is now **415** instead of 400, because the
+  validator refuses it before Zod sees it; 415 is also the more exact code.
+- **Bearer security scheme.** `registerComponent("securitySchemes", "Bearer", ...)` with
+  `bearerFormat: "JWT"`, and every `/api/...` route has `security: [{ Bearer: [] }]`, so
+  the docs page has an **Authorize** button and sends the token on those routes only.
+- **Every response is listed**, not only the success: each route lists the error codes it
+  can really return: 400 where it reads a body or a query, 401 on every `/api` route, 403
+  on the admin route, 404 on every `{id}` route, 409, 413, 415 and 429 where they happen,
+  and a `default` (500, or 503 when the pool of Bonus 6 is busy) on all of them. I did not
+  add a 404 to routes that cannot return one (like `GET /api/tasks`), so the document does
+  not promise something the code never does.
+- **Typed answers.** Because the responses are declared, TypeScript checks that a handler
+  only returns what its route declares: `deno task check` fails if, for example, the
+  create route returns a body that is not a `Task`.
+- The upload route documents a `multipart/form-data` body with a `file` field, so the docs
+  page shows a file picker; the image itself is still checked in the route (Bonus 12). The
+  download route documents `image/png` and `image/jpeg`. `/ws` (Bonus 13) is documented
+  with its 101, 400 and 401.
+
+Real run (bash, `PORT=8018`): every path with its documented response codes, the security
+scheme, the `TaskBody` schema as the docs page gets it, and the docs page:
+
+```
+$ curl -s localhost:8018/openapi.json | jq -r '.paths | to_entries[] | .key as $p | .value | to_entries[] | "\(.key | ascii_upcase) \($p)  \(.value.responses | keys | join(" "))"'
+GET /health  200 default
+GET /healthz  200 default
+GET /readyz  200 503 default
+POST /auth/register  201 400 409 default
+POST /auth/login  200 400 401 429 default
+GET /ws  101 400 401 default
+GET /api/admin/users  200 401 403 default
+GET /api/me/summary  200 401 default
+GET /api/tasks  200 400 401 default
+POST /api/tasks  201 400 401 default
+GET /api/tasks/{id}  200 401 404 default
+PUT /api/tasks/{id}  200 400 401 404 default
+DELETE /api/tasks/{id}  200 401 404 default
+POST /api/tasks/{id}/restore  200 401 404 default
+POST /api/tasks/{id}/attachment  201 400 401 404 413 415 default
+GET /api/tasks/{id}/attachment  200 401 404 default
+$ curl -s localhost:8018/openapi.json | jq -c .components.securitySchemes
+{"Bearer":{"type":"http","scheme":"bearer","bearerFormat":"JWT"}}
+$ curl -s localhost:8018/openapi.json | jq -c .components.schemas.TaskBody
+{"type":"object","properties":{"title":{"type":"string","minLength":1,"maxLength":100,"example":"Read Meteoroloji unit 7"},"status":{"type":"string","enum":["todo","in-progress","done"],"default":"todo"},"priority":{"type":"string","enum":["low","medium","high"],"default":"medium"},"dueDate":{"type":"string","nullable":true,"format":"date","default":null,"example":"2026-11-30"}},"required":["title"]}
+$ curl -si localhost:8018/docs | head -1
+HTTP/1.1 200 OK
+```
+
+**Trying it from the docs page** (`deno task seed`, `deno task dev`, then
+http://localhost:8000/docs): I logged in with **POST /auth/login** ("Try it out" with the
+demo user), copied the token into **Authorize**, and ran **GET /api/tasks**. The page sent
+`Authorization: Bearer ...` by itself and got **200** with the demo tasks
+([screenshot](docs/bonus8-swagger-try.png); the token in it was signed with the
+development secret and expired after one hour).
+
+Tests (`tests/openapi_test.ts`, 6 tests): `/openapi.json` lists exactly the 16 routes of
+`routes` (method and path); the Bearer scheme exists and exactly the `/api` routes need
+it; every `/api` route lists 401, every `{id}` route 404, every route with input 400, and
+all of them `default`; the documented `TaskBody` has `maxLength: 100` and the three
+statuses, and a 101-character title is refused with 400 at `["title"]`; `/docs` is the
+Swagger UI page and loads `/openapi.json`; and a broken JSON body is 400 and a
+`text/plain` body 415, both in our error shape. All 91 tests from before still pass
+unchanged, which is how I know the move to `OpenAPIHono` did not change the API.
 
 ## Bonus 9: Roles (RBAC)
 

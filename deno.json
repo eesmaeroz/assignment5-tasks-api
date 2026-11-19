@@ -18,6 +18,8 @@
   "imports": {
     "hono": "npm:hono@^4",
     "hono/body-limit": "npm:hono@^4/body-limit",
+    "@hono/zod-openapi": "npm:@hono/zod-openapi@^1",
+    "@hono/swagger-ui": "npm:@hono/swagger-ui@^0",
     "zod": "npm:zod@^4",
     "bcryptjs": "npm:bcryptjs@^3",
     "drizzle-orm": "npm:drizzle-orm@^0.44",
