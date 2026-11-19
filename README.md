@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (85)
+    deno task test       # all tests (91)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
@@ -104,19 +104,20 @@ button in the form, `type="button"` for the others), because `deno lint` reporte
 
 ### Tests
 
-85 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+91 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, and for the bonuses: 5 in `tests/softdelete_test.ts` (Bonus 2), 4 in
-`tests/summary_test.ts` (Bonus 3), 2 in `tests/index_test.ts` (Bonus 4), 7 in
-`tests/jwt_test.ts` (Bonus 7), 3 in `tests/seed_test.ts` (Bonus 5), 6 in
-`tests/roles_test.ts` (Bonus 9), 3 in `tests/logging_test.ts` (Bonus 10), 8 in
-`tests/config_test.ts` (Bonus 11, one for Bonus 14), 8 in `tests/upload_test.ts` (Bonus
-12), 4 in `tests/live_test.ts` (Bonus 13), 6 in `tests/purge_test.ts` (Bonus 14, one for
-Bonus 12), 6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus
-16). They cover everything the handout lists: duplicate email (409), wrong password (401),
-missing token (401), bad body (400), another user's task (404 for read, update **and**
-delete), invalid status (400) and pagination (page 2 holds the right task), plus
-filtering, bad query values, the 101-character title, an impossible due date, update and
-delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+`tests/summary_test.ts` (Bonus 3), 6 in `tests/pool_test.ts` (Bonus 6), 2 in
+`tests/index_test.ts` (Bonus 4), 7 in `tests/jwt_test.ts` (Bonus 7), 3 in
+`tests/seed_test.ts` (Bonus 5), 6 in `tests/roles_test.ts` (Bonus 9), 3 in
+`tests/logging_test.ts` (Bonus 10), 8 in `tests/config_test.ts` (Bonus 11, one for Bonus
+14 and the defaults of 6, 12 and 16), 8 in `tests/upload_test.ts` (Bonus 12), 4 in
+`tests/live_test.ts` (Bonus 13), 6 in `tests/purge_test.ts` (Bonus 14, one for Bonus 12),
+6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16). They
+cover everything the handout lists: duplicate email (409), wrong password (401), missing
+token (401), bad body (400), another user's task (404 for read, update **and** delete),
+invalid status (400) and pagination (page 2 holds the right task), plus filtering, bad
+query values, the 101-character title, an impossible due date, update and delete, and the
+404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -382,6 +383,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 3: Joins and the N+1 problem
 - Bonus 4: Indexes and EXPLAIN
 - Bonus 5: Seed data
+- Bonus 6: A connection pool (option B: my own pool on SQLite)
 - Bonus 7: JWT instead of sessions
 - Bonus 9: Roles (RBAC)
 - Bonus 10: Logging and request ids
@@ -611,6 +613,83 @@ tasks) and a second run adds 0 and 0; a real user who registered first can still
 and has no demo tasks; a demo user can log in and gets a first page of 5 out of 11 tasks.
 `seed()` is exported and takes the database, so the tests run it on a temporary file
 instead of the real `tasks.db`.
+
+## Bonus 6: A connection pool (Postgres or SQLite)
+
+Bonus 6: A connection pool (Postgres or SQLite)
+
+**I did option B**: a pool I wrote myself, on SQLite (`src/pool.ts`, used in `src/db.ts`
+and `src/app.ts`).
+
+- **`Pool<T>`** holds a fixed set of items. `acquire()` gives an idle one, or waits in a
+  queue (first come, first served); `release()` hands the item straight to the next
+  waiter, or puts it back; `use(fn)` borrows, runs `fn` and gives the item back in a
+  `finally`, so a job that throws cannot keep it. Two changes to the example in the
+  handout: `acquire()` checks `idle.length` instead of `if (item)` (an item could be `0`
+  or `""`), and a waiter gives up after 5 s with a `PoolTimeoutError` instead of waiting
+  for ever.
+- **`createDbPool(url, size)`** opens `size` libSQL clients on the same file, each with
+  its own Drizzle. `PRAGMA journal_mode = WAL` is set once (readers do not block the
+  writer, and it is stored in the file, so every client gets it).
+  `PRAGMA busy_timeout = 5000` is set **every time a client is lent out**, because I found
+  that it does not stay: it belongs to one connection, and libSQL opens a new connection
+  after a transaction. A small test printed `busy_timeout 5000` before a transaction and
+  `busy_timeout 0` after it, while `journal_mode` stayed `wal`.
+- **Every route borrows a client** through `withDb((db) => ...)` in `createApp`, and gives
+  it back when its queries are done; the list route runs its two queries (page and total)
+  on the same borrowed client. The purge job (Bonus 14) borrows one too. Without a pool
+  (as in most tests) the app makes a pool of one around the database it was given, so the
+  code is the same either way.
+
+**Pool size: 4** (`POOL_SIZE`, 1 to 32 in `config.ts`). SQLite lets only one connection
+write at a time, so more clients do not make writes faster; a few clients are enough for
+reads to go on while one request is in a transaction. With a remote database (Turso, Bonus
+19) every query is a network call, and then the number is a real limit on how many open at
+once; 4 is small enough not to overload a free plan.
+
+**When all clients are busy**, a request waits in the queue and gets the next client that
+is released. If none comes back within 5 s, the app answers **503**
+`database busy, try again` with `Retry-After: 1`, instead of piling up requests that hang.
+
+**Why SQLite gains little from a pool** (compared with Postgres): Postgres is a separate
+server, each connection is a process there, and a query waits for the network, so a pool
+saves the cost of opening connections and lets many queries run at the same time. SQLite
+is a file opened inside my process: opening a client is cheap, and only one writer can
+work at a time anyway. I could see this in a test: 30 parallel creates through a pool of 3
+passed **even with `busy_timeout = 0`**, because the local libSQL client runs each query
+synchronously on Deno's one thread, so inside one process two queries never overlap. The
+timeout matters when **another process** holds the lock (a second server,
+`deno task seed`, the `sqlite3` tool). Real run with two processes (bash):
+`scripts/lock/hold.ts` keeps a write transaction open for 2 s, and `scripts/lock/write.ts`
+tries to insert one second later, first without and then with a busy timeout:
+
+```
+$ deno run -A scripts/lock/hold.ts & sleep 1; deno run -A scripts/lock/write.ts 0
+holder: write lock taken, keeping it for 2 s
+writer (busy_timeout=0): SQLITE_BUSY: database is locked
+holder: committed
+$ deno run -A scripts/lock/hold.ts & sleep 1; deno run -A scripts/lock/write.ts 5000
+holder: write lock taken, keeping it for 2 s
+holder: committed
+writer (busy_timeout=5000): ok after 1033 ms
+```
+
+Real run of the API (bash, `POOL_SIZE=4`, `PORT=8016`, one registered user): 50 creates at
+the same time, all 201, and the total is 51 with the welcome task:
+
+```
+$ seq 1 50 | xargs -P 50 -I{} curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8016/api/tasks -H "authorization: Bearer $TOKEN" -H "content-type: application/json" -d '{"title":"parallel {}"}' | sort | uniq -c
+     50 201
+$ curl -s "localhost:8016/api/tasks?limit=1" -H "authorization: Bearer $TOKEN"
+{"items":[{"id":1,"userId":1,"title":"Welcome! Add your first task","status":"todo","priority":"low","dueDate":null,"createdAt":1795116762,"deletedAt":null,"doneAt":null,"attachment":null}],"page":1,"limit":1,"total":51}
+```
+
+Tests (`tests/pool_test.ts`, 6 tests): 20 jobs on a pool of 3 never run more than 3 at
+once and all 20 finish; `release` serves the waiters in the order they came; `use` gives
+the item back when the job throws; a waiter gives up after the timeout and leaves the
+queue; the app answers 503 with `Retry-After` while somebody holds the only client, and
+200 again after it is released; and a real pool of 3 clients on one file is in WAL mode
+and takes 30 parallel creates without an error.
 
 ## Bonus 7: JWT instead of sessions
 

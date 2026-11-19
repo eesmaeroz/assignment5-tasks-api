@@ -40,6 +40,7 @@ Deno.test("config: defaults for development", () => {
     JWT_SECRET: "change-me",
     PURGE_CRON: "0 3 * * *",
     UPLOAD_DIR: "./uploads",
+    POOL_SIZE: 4,
   });
 });
 

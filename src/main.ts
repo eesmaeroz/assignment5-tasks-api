@@ -1,6 +1,6 @@
 // Meryem Esma Eröz, 2200005798
 import { createApp } from "./app.ts";
-import { createDb, migrate } from "./db.ts";
+import { createDbPool, migrate } from "./db.ts";
 import { type Config, ConfigError, loadConfig } from "./config.ts";
 import { TaskCache } from "./cache.ts";
 import { purgeOldDone } from "./purge.ts";
@@ -15,8 +15,12 @@ try {
   Deno.exit(1);
 }
 
-const db = createDb(config.DATABASE_URL);
-await migrate(db);
+// Bonus 6: POOL_SIZE clients on the same database; every request borrows one.
+const pool = await createDbPool(config.DATABASE_URL, config.POOL_SIZE);
+const db = await pool.use(async (first) => {
+  await migrate(first);
+  return first;
+});
 
 console.log(`APP_ENV=${config.APP_ENV}, database ${config.DATABASE_URL}`);
 
@@ -29,11 +33,14 @@ const app = createApp(db, {
   jwtSecret: config.JWT_SECRET,
   cache,
   uploadDir: config.UPLOAD_DIR,
+  pool,
 });
 
 // Bonus 14: the nightly cleanup. Needs --unstable-cron (it is in the deno.json tasks).
 Deno.cron("purge old done tasks", config.PURGE_CRON, async () => {
-  const removed = await purgeOldDone(db, 30, { cache, uploadDir: config.UPLOAD_DIR });
+  const removed = await pool.use((d) =>
+    purgeOldDone(d, 30, { cache, uploadDir: config.UPLOAD_DIR })
+  );
   console.log(JSON.stringify({ time: new Date().toISOString(), job: "purge", removed }));
 });
 

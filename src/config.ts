@@ -25,6 +25,8 @@ const ConfigSchema = z
     KV_PATH: z.string().optional(),
     // Bonus 12: the folder for attached images (kept out of Git by .gitignore).
     UPLOAD_DIR: z.string().default("./uploads"),
+    // Bonus 6: how many database clients the pool opens (see the README for why 4).
+    POOL_SIZE: z.coerce.number().int().min(1).max(32).default(4),
   })
   .superRefine((c, ctx) => {
     if (c.APP_ENV !== "production") return;

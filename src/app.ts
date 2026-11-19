@@ -3,7 +3,8 @@ import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { and, asc, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import type { Db } from "./db.ts";
+import type { Db, DbPool } from "./db.ts";
+import { Pool, PoolTimeoutError } from "./pool.ts";
 import { PRIORITIES, STATUSES, type Task, tasks, users } from "./schema.ts";
 import {
   checkPassword,
@@ -104,11 +105,18 @@ export type AppOptions = {
   uploadDir?: string;
   /** Bonus 13: the open WebSockets; a test can pass its own to look inside. */
   live?: LiveHub;
+  /**
+   * Bonus 6: the routes borrow a client from this pool. Without one, the app uses a pool
+   * of one: the database it was given (the tests mostly do that).
+   */
+  pool?: DbPool;
 };
 
 /** Build the whole application around a database, so tests can give it their own. */
 export function createApp(database: Db, options: AppOptions = {}) {
-  const { db } = database;
+  const pool = options.pool ?? new Pool([database]);
+  /** Every route runs its queries on a borrowed client and gives it back (Bonus 6). */
+  const withDb = <R>(fn: (db: Db["db"]) => Promise<R>) => pool.use((d) => fn(d.db));
   const limiter = options.limiter ?? new LoginLimiter();
   const welcomeTask = options.welcomeTask ?? defaultWelcome;
   const adminEmail = options.adminEmail?.toLowerCase();
@@ -146,7 +154,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
   // /readyz: the process can do real work, so the database must answer a query.
   app.get("/readyz", async (c) => {
     try {
-      await db.run(sql`SELECT 1`);
+      await withDb((db) => db.run(sql`SELECT 1`));
       return c.json({ ready: true });
     } catch (error) {
       console.error("readyz:", error);
@@ -161,26 +169,29 @@ export function createApp(database: Db, options: AppOptions = {}) {
     if (!parsed.success) return invalid(c, parsed.error);
     const email = parsed.data.email.toLowerCase();
 
-    const [existing] = await db.select({ id: users.id }).from(users)
-      .where(eq(users.email, email));
+    const [existing] = await withDb((db) =>
+      db.select({ id: users.id }).from(users).where(eq(users.email, email))
+    );
     if (existing) return fail(c, 409, "email already registered");
 
     const passwordHash = await hashPassword(parsed.data.password);
     // Bonus 2: the user and the welcome task are created in ONE transaction. If the second
     // insert fails, the first one is rolled back, so there is never a user without it.
-    const user = await db.transaction(async (tx) => {
-      const role = email === adminEmail ? "admin" : "user";
-      const [created] = await tx.insert(users)
-        .values({ email, passwordHash, role })
-        .returning({
-          id: users.id,
-          email: users.email,
-          role: users.role,
-          createdAt: users.createdAt,
-        });
-      await tx.insert(tasks).values(welcomeTask(created.id));
-      return created;
-    });
+    const user = await withDb((db) =>
+      db.transaction(async (tx) => {
+        const role = email === adminEmail ? "admin" : "user";
+        const [created] = await tx.insert(users)
+          .values({ email, passwordHash, role })
+          .returning({
+            id: users.id,
+            email: users.email,
+            role: users.role,
+            createdAt: users.createdAt,
+          });
+        await tx.insert(tasks).values(welcomeTask(created.id));
+        return created;
+      })
+    );
     return c.json(user, 201);
   });
 
@@ -197,7 +208,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
       return fail(c, 429, "too many failed logins, try again later");
     }
 
-    const [user] = await db.select().from(users).where(eq(users.email, email));
+    const [user] = await withDb((db) =>
+      db.select().from(users).where(eq(users.email, email))
+    );
     // The same answer for an unknown email and a wrong password.
     if (!user || !(await checkPassword(parsed.data.password, user.passwordHash))) {
       limiter.recordFailure(email);
@@ -248,24 +261,26 @@ export function createApp(database: Db, options: AppOptions = {}) {
   // Every user with the number of their (not deleted) tasks: one LEFT JOIN + GROUP BY, so
   // a user with no tasks is listed too, with 0.
   app.get("/api/admin/users", async (c) => {
-    const rows = await db
-      .select({
+    const rows = await withDb((db) =>
+      db.select({
         id: users.id,
         email: users.email,
         role: users.role,
         createdAt: users.createdAt,
         tasks: count(tasks.id),
       })
-      .from(users)
-      .leftJoin(tasks, and(eq(tasks.userId, users.id), isNull(tasks.deletedAt)))
-      .groupBy(users.id)
-      .orderBy(asc(users.id));
+        .from(users)
+        .leftJoin(tasks, and(eq(tasks.userId, users.id), isNull(tasks.deletedAt)))
+        .groupBy(users.id)
+        .orderBy(asc(users.id))
+    );
     return c.json({ items: rows });
   });
 
   // Bonus 3: the number of my tasks per status, with ONE GROUP BY query.
   app.get("/api/me/summary", async (c) => {
-    return c.json(await summaryGrouped(database, c.get("userId")));
+    const userId = c.get("userId");
+    return c.json(await pool.use((d) => summaryGrouped(d, userId)));
   });
 
   app.get("/api/tasks", async (c) => {
@@ -278,22 +293,26 @@ export function createApp(database: Db, options: AppOptions = {}) {
       isNull(tasks.deletedAt),
       status ? eq(tasks.status, status) : undefined,
     );
-    const items = await db.select().from(tasks).where(where)
-      .orderBy(asc(tasks.id)).limit(limit).offset((page - 1) * limit);
-    const [{ total }] = await db.select({ total: count() }).from(tasks).where(where);
+    // both queries on the same borrowed client
+    const { items, total } = await withDb(async (db) => {
+      const items = await db.select().from(tasks).where(where)
+        .orderBy(asc(tasks.id)).limit(limit).offset((page - 1) * limit);
+      const [{ total }] = await db.select({ total: count() }).from(tasks).where(where);
+      return { items, total };
+    });
     return c.json({ items, page, limit, total });
   });
 
   app.post("/api/tasks", async (c) => {
     const parsed = TaskBody.safeParse(await readJson(c));
     if (!parsed.success) return invalid(c, parsed.error);
-    const [task] = await db.insert(tasks)
-      .values({
+    const [task] = await withDb((db) =>
+      db.insert(tasks).values({
         ...parsed.data,
         userId: c.get("userId"),
         doneAt: parsed.data.status === "done" ? sql`(strftime('%s','now'))` : null,
-      })
-      .returning();
+      }).returning()
+    );
     live.send(task.userId, { type: "created", task });
     return c.json(task, 201);
   });
@@ -308,7 +327,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
       c.header("x-cache", "hit"); // so a curl -i shows where the answer came from
       return c.json(cached);
     }
-    const [task] = await db.select().from(tasks).where(own(id.data, userId));
+    const [task] = await withDb((db) =>
+      db.select().from(tasks).where(own(id.data, userId))
+    );
     if (!task) return fail(c, 404, "task not found");
     if (cache) {
       await cache.set(task);
@@ -322,9 +343,12 @@ export function createApp(database: Db, options: AppOptions = {}) {
     if (!id.success) return fail(c, 404, "task not found");
     const parsed = TaskBody.safeParse(await readJson(c));
     if (!parsed.success) return invalid(c, parsed.error);
-    const [task] = await db.update(tasks)
-      .set({ ...parsed.data, doneAt: doneAtFor(parsed.data.status) })
-      .where(own(id.data, c.get("userId"))).returning();
+    const userId = c.get("userId");
+    const [task] = await withDb((db) =>
+      db.update(tasks)
+        .set({ ...parsed.data, doneAt: doneAtFor(parsed.data.status) })
+        .where(own(id.data, userId)).returning()
+    );
     // Bonus 16: the cached copy is old now. Deleted, not replaced: the next GET loads it.
     await cache?.delete(c.get("userId"), id.data);
     if (!task) return fail(c, 404, "task not found");
@@ -336,9 +360,12 @@ export function createApp(database: Db, options: AppOptions = {}) {
     const id = TaskId.safeParse(c.req.param("id"));
     if (!id.success) return fail(c, 404, "task not found");
     // Bonus 2: soft delete. The row stays; it only gets a deleted_at time.
-    const [task] = await db.update(tasks)
-      .set({ deletedAt: sql`(strftime('%s','now'))` })
-      .where(own(id.data, c.get("userId"))).returning({ id: tasks.id });
+    const userId = c.get("userId");
+    const [task] = await withDb((db) =>
+      db.update(tasks)
+        .set({ deletedAt: sql`(strftime('%s','now'))` })
+        .where(own(id.data, userId)).returning({ id: tasks.id })
+    );
     await cache?.delete(c.get("userId"), id.data);
     if (!task) return fail(c, 404, "task not found");
     live.send(c.get("userId"), { type: "deleted", task: { id: task.id } });
@@ -349,14 +376,17 @@ export function createApp(database: Db, options: AppOptions = {}) {
     const id = TaskId.safeParse(c.req.param("id"));
     if (!id.success) return fail(c, 404, "deleted task not found");
     // Only a task of this user that IS deleted can be restored.
-    const [task] = await db.update(tasks)
-      .set({ deletedAt: null })
-      .where(and(
-        eq(tasks.id, id.data),
-        eq(tasks.userId, c.get("userId")),
-        isNotNull(tasks.deletedAt),
-      ))
-      .returning();
+    const userId = c.get("userId");
+    const [task] = await withDb((db) =>
+      db.update(tasks)
+        .set({ deletedAt: null })
+        .where(and(
+          eq(tasks.id, id.data),
+          eq(tasks.userId, userId),
+          isNotNull(tasks.deletedAt),
+        ))
+        .returning()
+    );
     await cache?.delete(c.get("userId"), id.data);
     if (!task) return fail(c, 404, "deleted task not found");
     live.send(task.userId, { type: "restored", task });
@@ -379,7 +409,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
       if (!id.success) return fail(c, 404, "task not found");
       const userId = c.get("userId");
       // The owner check comes first: nothing is saved for somebody else's task.
-      const [task] = await db.select().from(tasks).where(own(id.data, userId));
+      const [task] = await withDb((db) =>
+        db.select().from(tasks).where(own(id.data, userId))
+      );
       if (!task) return fail(c, 404, "task not found");
 
       const file = (await c.req.parseBody())["file"];
@@ -402,8 +434,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
       const name = newName(file.type);
       await Deno.mkdir(uploadDir, { recursive: true });
       await Deno.writeFile(`${uploadDir}/${name}`, bytes);
-      const [updated] = await db.update(tasks).set({ attachment: name })
-        .where(own(id.data, userId)).returning();
+      const [updated] = await withDb((db) =>
+        db.update(tasks).set({ attachment: name }).where(own(id.data, userId)).returning()
+      );
       // A new image replaces the old one, so the old file is not left behind.
       if (task.attachment) await removeSaved(uploadDir, task.attachment);
       await cache?.delete(userId, id.data); // Bonus 16: the row changed
@@ -415,7 +448,10 @@ export function createApp(database: Db, options: AppOptions = {}) {
   app.get("/api/tasks/:id/attachment", async (c) => {
     const id = TaskId.safeParse(c.req.param("id"));
     if (!id.success) return fail(c, 404, "attachment not found");
-    const [task] = await db.select().from(tasks).where(own(id.data, c.get("userId")));
+    const userId = c.get("userId");
+    const [task] = await withDb((db) =>
+      db.select().from(tasks).where(own(id.data, userId))
+    );
     if (!task?.attachment) return fail(c, 404, "attachment not found");
     try {
       const bytes = await Deno.readFile(`${uploadDir}/${task.attachment}`);
@@ -437,6 +473,11 @@ export function createApp(database: Db, options: AppOptions = {}) {
   app.notFound((c) => fail(c, 404, "not found"));
 
   app.onError((err, c) => {
+    // Bonus 6: every client of the pool stayed busy for 5 s; the caller may try again.
+    if (err instanceof PoolTimeoutError) {
+      c.header("Retry-After", "1");
+      return fail(c, 503, "database busy, try again");
+    }
     console.error(err); // the details go to the log, never to the client
     return fail(c, 500, "internal error");
   });
