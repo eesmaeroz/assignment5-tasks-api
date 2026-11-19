@@ -12,7 +12,8 @@
     "ui:dev": "cd ui && deno task dev",
     "seed": "deno run -A scripts/seed.ts",
     "n1": "deno run -A scripts/n1.ts",
-    "explain": "deno run -A scripts/explain.ts"
+    "explain": "deno run -A scripts/explain.ts",
+    "watch": "deno run --allow-net --allow-env scripts/watch.ts"
   },
   "imports": {
     "hono": "npm:hono@^4",

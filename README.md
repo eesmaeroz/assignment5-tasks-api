@@ -9,12 +9,13 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000
-    deno task test       # all tests (81)
+    deno task test       # all tests (85)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task start:test # Bonus 11: start with .env.test (port 8001)
     deno task n1         # Bonus 3: count the queries of the N+1 and the GROUP BY summary
     deno task explain    # Bonus 4: the query plan and time before and after the index
+    deno task watch <email> <password>   # Bonus 13: print the live updates of a user
     deno fmt --check     # formatting
     deno lint            # lint
 
@@ -26,8 +27,9 @@ Start the API first, then in a second terminal:
     deno task ui:install   # once
     deno task ui:dev       # UI on http://localhost:5173
 
-The only change I made in `ui/` is a `type` on every `<button>` (`type="submit"` for the
-Add button in the form, `type="button"` for the others), because `deno lint` reported
+For Bonus 13 the UI also listens on the WebSocket (see that section). Apart from that, the
+only change I made in `ui/` is a `type` on every `<button>` (`type="submit"` for the Add
+button in the form, `type="button"` for the others), because `deno lint` reported
 `jsx-button-has-type` six times in `ui/src/App.tsx` and R1 asks for a clean lint.
 
 ## Design decisions (R8)
@@ -102,19 +104,19 @@ Add button in the form, `type="button"` for the others), because `deno lint` rep
 
 ### Tests
 
-81 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+85 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, and for the bonuses: 5 in `tests/softdelete_test.ts` (Bonus 2), 4 in
 `tests/summary_test.ts` (Bonus 3), 2 in `tests/index_test.ts` (Bonus 4), 7 in
 `tests/jwt_test.ts` (Bonus 7), 3 in `tests/seed_test.ts` (Bonus 5), 6 in
 `tests/roles_test.ts` (Bonus 9), 3 in `tests/logging_test.ts` (Bonus 10), 8 in
 `tests/config_test.ts` (Bonus 11, one for Bonus 14), 8 in `tests/upload_test.ts` (Bonus
-12), 6 in `tests/purge_test.ts` (Bonus 14, one for Bonus 12), 6 in
-`tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16). They cover
-everything the handout lists: duplicate email (409), wrong password (401), missing token
-(401), bad body (400), another user's task (404 for read, update **and** delete), invalid
-status (400) and pagination (page 2 holds the right task), plus filtering, bad query
-values, the 101-character title, an impossible due date, update and delete, and the 404
-shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+12), 4 in `tests/live_test.ts` (Bonus 13), 6 in `tests/purge_test.ts` (Bonus 14, one for
+Bonus 12), 6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus
+16). They cover everything the handout lists: duplicate email (409), wrong password (401),
+missing token (401), bad body (400), another user's task (404 for read, update **and**
+delete), invalid status (400) and pagination (page 2 holds the right task), plus
+filtering, bad query values, the 101-character title, an impossible due date, update and
+delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -385,6 +387,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 10: Logging and request ids
 - Bonus 11: Health, readiness and configuration
 - Bonus 12: File upload
+- Bonus 13: WebSocket live updates
 - Bonus 14: A background job with Deno.cron
 - Bonus 15: Rate limit on login
 - Bonus 16: A cache with Deno KV
@@ -939,6 +942,88 @@ upload and download and nothing is saved; a second upload leaves only the new fi
 deleted task's image is 404. One more test in `tests/purge_test.ts` checks that the purge
 deletes the image of a removed task and keeps the others. In all failure tests the folder
 stays empty.
+
+## Bonus 13: WebSocket live updates
+
+Bonus 13: WebSocket live updates
+
+A tab that has the task list open sees a change made in another tab at once.
+
+- **`GET /ws?token=...`.** A browser cannot set an `Authorization` header on a WebSocket,
+  so the token (the JWT of Bonus 7) comes in the query. It is checked with the same
+  `verifyToken` as `requireAuth`, **before** `Deno.upgradeWebSocket`: a missing or bad
+  token is 401 and never gets a socket. A request without `upgrade: websocket` is 400.
+- **The token is not logged.** The request log of Bonus 10 writes only the path, never the
+  query, so the line is `"path":"/ws","status":101` without the token (see the server log
+  below). A token in a URL can still end up in a proxy log, which is why it is
+  short-lived.
+- **`LiveHub` (`src/live.ts`)** keeps a `Map<number, Set<WebSocket>>`: user id to that
+  user's sockets, one per tab. `onopen` adds the socket, `onclose` removes it, and a user
+  whose last tab closed is removed from the map.
+- **After a create, update, delete, restore or upload** the route sends `{ type, task }`
+  to the owner's sockets only (`live.send(userId, ...)`), never to everyone. A delete
+  sends only `{ id }`. A change that fails (another user's task, 404) sends nothing.
+- **The given UI** (two changes of mine): `App.tsx` opens the socket after login, loads
+  the list again on every message and closes the socket on log out; `vite.config.ts`
+  forwards `/ws` to the API with `ws: true`.
+- **What it does not do:** a socket stays open after its token expires (the token is only
+  checked when it connects), and the purge job (Bonus 14) sends no events. With several
+  servers each one would only know its own sockets; they would need something shared (for
+  example a `BroadcastChannel` on Deno Deploy).
+
+Real run (bash): the API on `PORT=8013` after the seed, and `scripts/watch.ts`
+(`deno task watch <email> <password>`) started three times: twice for Esma (two "tabs")
+and once for Mery. Then three changes with curl as Esma, and a wrong token:
+
+```
+$ curl -s -X POST localhost:8013/api/tasks -H "authorization: Bearer $TOKEN" -H "content-type: application/json" -d '{"title":"Bonus 13: WebSocket"}'
+{"id":21,"userId":1,"title":"Bonus 13: WebSocket","status":"todo","priority":"medium","dueDate":null,"createdAt":1795115715,"deletedAt":null,"doneAt":null,"attachment":null}
+$ curl -s -X PUT localhost:8013/api/tasks/21 -H "authorization: Bearer $TOKEN" -H "content-type: application/json" -d '{"title":"Bonus 13: WebSocket","status":"done"}'
+{"id":21,"userId":1,"title":"Bonus 13: WebSocket","status":"done","priority":"medium","dueDate":null,"createdAt":1795115715,"deletedAt":null,"doneAt":1795115715,"attachment":null}
+$ curl -s -X DELETE localhost:8013/api/tasks/21 -H "authorization: Bearer $TOKEN"
+{"ok":true}
+$ curl -si "localhost:8013/ws?token=wrong" -H "upgrade: websocket" | head -1
+HTTP/1.1 401 Unauthorized
+```
+
+What the three watchers printed:
+
+```
+# tab 1 (Esma)
+demo.esma@example.com: connected, waiting for changes
+demo.esma@example.com: created task 21 "Bonus 13: WebSocket" (todo)
+demo.esma@example.com: updated task 21 "Bonus 13: WebSocket" (done)
+demo.esma@example.com: deleted task 21
+# tab 2 (Esma)
+demo.esma@example.com: connected, waiting for changes
+demo.esma@example.com: created task 21 "Bonus 13: WebSocket" (todo)
+demo.esma@example.com: updated task 21 "Bonus 13: WebSocket" (done)
+demo.esma@example.com: deleted task 21
+# Mery
+demo.mery@example.com: connected, waiting for changes
+```
+
+Both of Esma's sockets got all three changes; Mery's got nothing. The server log
+(Bonus 10) for the four `/ws` requests: three upgrades (101) and the wrong token (401),
+with no token in any line:
+
+```
+{"time":"2026-11-19T19:15:11.586Z","requestId":"69fadee6-89ea-455c-bafb-dc701e6bd6a3","method":"GET","path":"/ws","status":101,"ms":3}
+{"time":"2026-11-19T19:15:11.589Z","requestId":"69373437-4d7d-41e3-a610-27697825cd3a","method":"GET","path":"/ws","status":101,"ms":0}
+{"time":"2026-11-19T19:15:11.589Z","requestId":"f3b4fb76-44e2-458a-bc05-6f3de4d06973","method":"GET","path":"/ws","status":101,"ms":1}
+{"time":"2026-11-19T19:15:15.410Z","requestId":"d84a118e-0f3c-4df3-b853-aa757406889f","method":"GET","path":"/ws","status":401,"ms":1}
+```
+
+**What I observed with the given UI** (`deno task seed`, `deno task dev`,
+`deno task ui:dev`, then http://localhost:5173 in two tabs, both logged in as
+`demo.esma@example.com`): I added a task, advanced one and deleted one in the first tab,
+and each time the second tab changed too, at once, without reloading the page.
+
+Tests (`tests/live_test.ts`, 4 tests): a missing, empty and wrong token are 401 before any
+upgrade; a good token without an upgrade is 400; with the app on a real port, two sockets
+of Esma both get `created`, `updated`, `deleted` and `restored` in that order while Mery's
+socket gets nothing, and after closing all three the map is empty; a failed PUT on another
+user's task sends nothing to anybody.
 
 ## Bonus 14: A background job with Deno.cron
 

@@ -45,6 +45,21 @@ export default function App() {
     if (token) load(token);
   }, [token, load]);
 
+  // Bonus 13 (my change): listen for changes made in another tab and load the list again.
+  useEffect(() => {
+    if (!token) return;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(
+      `${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`,
+    );
+    socket.onmessage = (e) => {
+      const event = JSON.parse(e.data);
+      console.log("live:", event.type, event.task.id);
+      load(token);
+    };
+    return () => socket.close(); // on log out, or when the token changes
+  }, [token, load]);
+
   async function auth(kind: "register" | "login") {
     setMessage("");
     try {

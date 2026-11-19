@@ -14,7 +14,8 @@ import {
 } from "./auth.ts";
 import { LoginLimiter } from "./ratelimit.ts";
 import { summaryGrouped } from "./summary.ts";
-import { signToken } from "./jwt.ts";
+import { signToken, verifyToken } from "./jwt.ts";
+import { LiveHub } from "./live.ts";
 import type { TaskCache } from "./cache.ts";
 import {
   extensionFor,
@@ -101,6 +102,8 @@ export type AppOptions = {
   cache?: TaskCache;
   /** Bonus 12: where attached images are saved (default ./uploads). */
   uploadDir?: string;
+  /** Bonus 13: the open WebSockets; a test can pass its own to look inside. */
+  live?: LiveHub;
 };
 
 /** Build the whole application around a database, so tests can give it their own. */
@@ -113,6 +116,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
   const jwtSecret = options.jwtSecret ?? "change-me";
   const cache = options.cache;
   const uploadDir = options.uploadDir ?? "./uploads";
+  const live = options.live ?? new LiveHub();
   const app = new Hono<Env>();
 
   // Bonus 10: the first middleware. It gives every request an id, runs the rest, then
@@ -206,6 +210,24 @@ export function createApp(database: Db, options: AppOptions = {}) {
     });
   });
 
+  // ----- Bonus 13: live updates over a WebSocket --------------------------------
+
+  // A browser cannot send an Authorization header when it opens a WebSocket, so the token
+  // comes in the query: /ws?token=... It is checked like requireAuth does, BEFORE the
+  // upgrade, so a bad token never gets a socket. (The request log only writes the path,
+  // never the query, so the token does not end up in the log.)
+  app.get("/ws", async (c) => {
+    const user = await verifyToken(c.req.query("token") ?? "", jwtSecret);
+    if (user === null) return fail(c, 401, "unauthorized");
+    if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
+      return fail(c, 400, "expected a WebSocket upgrade");
+    }
+    const { socket, response } = Deno.upgradeWebSocket(c.req.raw);
+    socket.onopen = () => live.add(user.userId, socket);
+    socket.onclose = () => live.remove(user.userId, socket);
+    return response;
+  });
+
   // ----- Tasks (only for the logged-in owner) ---------------------------------
 
   app.use("/api/*", requireAuth(jwtSecret));
@@ -272,6 +294,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
         doneAt: parsed.data.status === "done" ? sql`(strftime('%s','now'))` : null,
       })
       .returning();
+    live.send(task.userId, { type: "created", task });
     return c.json(task, 201);
   });
 
@@ -304,7 +327,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
       .where(own(id.data, c.get("userId"))).returning();
     // Bonus 16: the cached copy is old now. Deleted, not replaced: the next GET loads it.
     await cache?.delete(c.get("userId"), id.data);
-    return task ? c.json(task) : fail(c, 404, "task not found");
+    if (!task) return fail(c, 404, "task not found");
+    live.send(task.userId, { type: "updated", task });
+    return c.json(task);
   });
 
   app.delete("/api/tasks/:id", async (c) => {
@@ -315,7 +340,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
       .set({ deletedAt: sql`(strftime('%s','now'))` })
       .where(own(id.data, c.get("userId"))).returning({ id: tasks.id });
     await cache?.delete(c.get("userId"), id.data);
-    return task ? c.json({ ok: true }) : fail(c, 404, "task not found");
+    if (!task) return fail(c, 404, "task not found");
+    live.send(c.get("userId"), { type: "deleted", task: { id: task.id } });
+    return c.json({ ok: true });
   });
 
   app.post("/api/tasks/:id/restore", async (c) => {
@@ -331,7 +358,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
       ))
       .returning();
     await cache?.delete(c.get("userId"), id.data);
-    return task ? c.json(task) : fail(c, 404, "deleted task not found");
+    if (!task) return fail(c, 404, "deleted task not found");
+    live.send(task.userId, { type: "restored", task });
+    return c.json(task);
   });
 
   // ----- Bonus 12: one image per task -------------------------------------------
@@ -378,6 +407,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
       // A new image replaces the old one, so the old file is not left behind.
       if (task.attachment) await removeSaved(uploadDir, task.attachment);
       await cache?.delete(userId, id.data); // Bonus 16: the row changed
+      live.send(userId, { type: "updated", task: updated });
       return c.json(updated, 201);
     },
   );

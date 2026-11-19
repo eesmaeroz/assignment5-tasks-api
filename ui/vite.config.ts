@@ -9,6 +9,8 @@ export default defineConfig({
     proxy: {
       "/auth": "http://localhost:8000",
       "/api": "http://localhost:8000",
+      // Bonus 13 (my change): forward the WebSocket too.
+      "/ws": { target: "ws://localhost:8000", ws: true },
     },
   },
 });
