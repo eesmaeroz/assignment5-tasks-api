@@ -22,7 +22,7 @@ Deno.test("GET /readyz is 200 when the database answers", async () => {
 
 Deno.test("GET /readyz is 503 when the database is gone, /healthz is still 200", async () => {
   const file = await Deno.makeTempFile({ suffix: ".db" });
-  const database = createDb(`file:${file}`);
+  const database = await createDb(`file:${file}`);
   await migrate(database);
   const app = createApp(database, { log: () => {} });
   database.client.close(); // simulate a lost database connection
@@ -42,6 +42,19 @@ Deno.test("config: defaults for development", () => {
     UPLOAD_DIR: "./uploads",
     POOL_SIZE: 4,
   });
+});
+
+Deno.test("config: a libsql: database needs its token (Bonus 19)", () => {
+  assertThrows(
+    () => loadConfig({ DATABASE_URL: "libsql://tasks-example.turso.io" }),
+    ConfigError,
+    "DATABASE_AUTH_TOKEN: a libsql: database needs its token",
+  );
+  const ok = loadConfig({
+    DATABASE_URL: "libsql://tasks-example.turso.io",
+    DATABASE_AUTH_TOKEN: "a-token",
+  });
+  assertEquals(ok.DATABASE_AUTH_TOKEN, "a-token");
 });
 
 Deno.test("config: PURGE_CRON must have five fields (Bonus 14)", () => {

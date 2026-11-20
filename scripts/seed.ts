@@ -174,7 +174,7 @@ if (import.meta.main) {
     Deno.exit(1);
   }
   const url = Deno.env.get("DATABASE_URL") ?? "file:./tasks.db";
-  const database = createDb(url);
+  const database = await createDb(url);
   await migrate(database);
   const added = await seed(database);
   console.log(`seed: ${url} -> added ${added.users} users and ${added.tasks} tasks`);

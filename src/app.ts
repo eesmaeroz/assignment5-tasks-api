@@ -430,8 +430,14 @@ export function createApp(database: Db, options: AppOptions = {}) {
     // Saved under a new name, never under file.name (that could be "../../x" or collide
     // with another upload).
     const name = newName(file.type);
-    await Deno.mkdir(uploadDir, { recursive: true });
-    await Deno.writeFile(`${uploadDir}/${name}`, bytes);
+    try {
+      await Deno.mkdir(uploadDir, { recursive: true });
+      await Deno.writeFile(`${uploadDir}/${name}`, bytes);
+    } catch (error) {
+      // Bonus 19: Deno Deploy has no disk to keep files on. Say so instead of a 500.
+      console.error(`upload: cannot write to ${uploadDir}: ${(error as Error).message}`);
+      return fail(c, 503, "file uploads are not available on this server");
+    }
     const [updated] = await withDb((db) =>
       db.update(tasks).set({ attachment: name, updatedAt: NOW }).where(own(id, userId))
         .returning()

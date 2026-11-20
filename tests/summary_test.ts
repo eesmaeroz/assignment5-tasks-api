@@ -35,7 +35,7 @@ Deno.test("summary without a token is 401", async () => {
 
 Deno.test("the naive and the grouped summary give the same answer", async () => {
   const file = await Deno.makeTempFile({ suffix: ".db" });
-  const database = createDb(`file:${file}`);
+  const database = await createDb(`file:${file}`);
   await migrate(database);
   const [user] = await database.db.insert(users)
     .values({ email: "x@example.com", passwordHash: "x" }).returning();

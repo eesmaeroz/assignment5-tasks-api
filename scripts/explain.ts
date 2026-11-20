@@ -13,7 +13,7 @@ const COUNT = "SELECT count(*) AS n FROM tasks WHERE user_id = ? AND status = ?"
 const ARGS = [7, "done"];
 
 const file = await Deno.makeTempFile({ suffix: ".db" });
-const database = createDb(`file:${file}`);
+const database = await createDb(`file:${file}`);
 const { client, db } = database;
 await migrate(database);
 // migrate() creates the index; drop it to start from the "before" state

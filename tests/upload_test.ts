@@ -142,3 +142,19 @@ Deno.test("a deleted task has no attachment to download", async () => {
   await send(app, "DELETE", `/api/tasks/${task.id}`, undefined, token);
   assertEquals((await download(app, task.id, token)).status, 404);
 });
+
+Deno.test("an upload folder that cannot be written is 503, not 500 (Bonus 19)", async () => {
+  // a FILE where the folder should be: mkdir fails, as on a read-only disk
+  const notADir = await Deno.makeTempFile();
+  const app = await freshApp({ uploadDir: `${notADir}/uploads` });
+  const token = await login(app, "esma@example.com");
+  const task = await makeTask(app, token, { title: "Lab photo" });
+  const res = await upload(
+    app,
+    task.id,
+    token,
+    new File([PNG], "a.png", { type: "image/png" }),
+  );
+  assertEquals(res.status, 503);
+  assertEquals((await res.json()).error, "file uploads are not available on this server");
+});

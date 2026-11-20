@@ -15,7 +15,7 @@ async function sqlFiles() {
 }
 
 async function emptyDb() {
-  return createDb(`file:${await Deno.makeTempFile({ suffix: ".db" })}`);
+  return await createDb(`file:${await Deno.makeTempFile({ suffix: ".db" })}`);
 }
 
 const columns = async ({ client }: Db, table: string) =>

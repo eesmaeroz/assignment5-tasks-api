@@ -5,7 +5,7 @@ import { createDb, migrate } from "../src/db.ts";
 
 async function freshDb() {
   const file = await Deno.makeTempFile({ suffix: ".db" });
-  const database = createDb(`file:${file}`);
+  const database = await createDb(`file:${file}`);
   await migrate(database);
   return database;
 }

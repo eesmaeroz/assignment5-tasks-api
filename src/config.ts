@@ -14,6 +14,8 @@ const ConfigSchema = z
       .regex(/^(file:|libsql:|https?:)/, "must start with file:, libsql: or http(s):")
       .default("file:./tasks.db"),
     JWT_SECRET: z.string().min(1).default("change-me"),
+    // Bonus 19: the token of a hosted libSQL database (Turso). Only from the environment.
+    DATABASE_AUTH_TOKEN: z.string().optional(),
     // Bonus 9: whoever registers with this email becomes an admin.
     ADMIN_EMAIL: z.email().optional(),
     // Bonus 14: when the purge job runs (five cron fields). Every night at 03:00 by
@@ -29,6 +31,14 @@ const ConfigSchema = z
     POOL_SIZE: z.coerce.number().int().min(1).max(32).default(4),
   })
   .superRefine((c, ctx) => {
+    // Bonus 19: a hosted database (Turso) answers 401 without its token, so say it now.
+    if (c.DATABASE_URL.startsWith("libsql:") && !c.DATABASE_AUTH_TOKEN) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["DATABASE_AUTH_TOKEN"],
+        message: "a libsql: database needs its token",
+      });
+    }
     if (c.APP_ENV !== "production") return;
     if (DEV_SECRETS.includes(c.JWT_SECRET)) {
       ctx.addIssue({

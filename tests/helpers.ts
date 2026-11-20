@@ -17,7 +17,7 @@ export async function freshApp(options: AppOptions = {}) {
 /** A fresh, empty database in a temporary file (also for tests that build the app). */
 export async function freshDb(logger?: Logger) {
   const file = await Deno.makeTempFile({ suffix: ".db" });
-  const db = createDb(`file:${file}`, logger);
+  const db = await createDb(`file:${file}`, { logger });
   await migrate(db);
   return db;
 }

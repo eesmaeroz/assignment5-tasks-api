@@ -19,7 +19,7 @@ Deno.test("register creates the user and a welcome task", async () => {
 
 Deno.test("a deleted task is not listed and not found, but the row is still there", async () => {
   const file = await Deno.makeTempFile({ suffix: ".db" });
-  const database = createDb(`file:${file}`);
+  const database = await createDb(`file:${file}`);
   await migrate(database);
   const app = createApp(database, { log: () => {} });
   const token = await login(app, "esma@example.com");
@@ -90,7 +90,7 @@ Deno.test("restore is 404 for a task that is not deleted, or not mine", async ()
 
 Deno.test("when the welcome task fails, the user is rolled back too", async () => {
   const file = await Deno.makeTempFile({ suffix: ".db" });
-  const database = createDb(`file:${file}`);
+  const database = await createDb(`file:${file}`);
   await migrate(database);
   // A welcome task that breaks a CHECK constraint, so the second insert throws.
   const app = createApp(database, {

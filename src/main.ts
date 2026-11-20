@@ -16,7 +16,9 @@ try {
 }
 
 // Bonus 6: POOL_SIZE clients on the same database; every request borrows one.
-const pool = await createDbPool(config.DATABASE_URL, config.POOL_SIZE);
+const pool = await createDbPool(config.DATABASE_URL, config.POOL_SIZE, {
+  authToken: config.DATABASE_AUTH_TOKEN, // Bonus 19 (Turso); undefined for a file
+});
 const db = await pool.use(async (first) => {
   await migrate(first);
   return first;
@@ -24,9 +26,14 @@ const db = await pool.use(async (first) => {
 
 console.log(`APP_ENV=${config.APP_ENV}, database ${config.DATABASE_URL}`);
 
-// Bonus 16: open KV once, for the whole process.
-const kv = await Deno.openKv(config.KV_PATH);
-const cache = new TaskCache(kv);
+// Bonus 16: open KV once, for the whole process. Bonus 19: if this platform has no KV,
+// the API still works, only without the cache (every GET reads the database).
+let cache: TaskCache | undefined;
+try {
+  cache = new TaskCache(await Deno.openKv(config.KV_PATH));
+} catch (error) {
+  console.error(`cache off, Deno KV is not available: ${(error as Error).message}`);
+}
 
 const app = createApp(db, {
   adminEmail: config.ADMIN_EMAIL,
@@ -37,11 +44,17 @@ const app = createApp(db, {
 });
 
 // Bonus 14: the nightly cleanup. Needs --unstable-cron (it is in the deno.json tasks).
-Deno.cron("purge old done tasks", config.PURGE_CRON, async () => {
-  const removed = await pool.use((d) =>
-    purgeOldDone(d, 30, { cache, uploadDir: config.UPLOAD_DIR })
-  );
-  console.log(JSON.stringify({ time: new Date().toISOString(), job: "purge", removed }));
-});
+try {
+  Deno.cron("purge old done tasks", config.PURGE_CRON, async () => {
+    const removed = await pool.use((d) =>
+      purgeOldDone(d, 30, { cache, uploadDir: config.UPLOAD_DIR })
+    );
+    console.log(
+      JSON.stringify({ time: new Date().toISOString(), job: "purge", removed }),
+    );
+  });
+} catch (error) {
+  console.error(`purge job off, Deno.cron is not available: ${(error as Error).message}`);
+}
 
 Deno.serve({ port: config.PORT }, app.fetch);
