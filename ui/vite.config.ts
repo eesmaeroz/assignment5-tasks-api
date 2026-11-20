@@ -1,3 +1,4 @@
+// Meryem Esma Eröz, 2200005798
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
