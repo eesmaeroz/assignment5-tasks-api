@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000, docs on http://localhost:8000/docs
-    deno task test       # all tests (104)
+    deno task test       # all tests (105)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task db:generate  # Bonus 1: a new migration in drizzle/ after a change in schema.ts
@@ -108,12 +108,12 @@ button in the form, `type="button"` for the others), because `deno lint` reporte
 
 ### Tests
 
-104 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+105 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, and for the bonuses: 5 in `tests/migrations_test.ts` (Bonus 1), 5 in
 `tests/softdelete_test.ts` (Bonus 2), 4 in `tests/summary_test.ts` (Bonus 3), 6 in
 `tests/pool_test.ts` (Bonus 6), 2 in `tests/index_test.ts` (Bonus 4), 7 in
-`tests/jwt_test.ts` (Bonus 7), 6 in `tests/openapi_test.ts` (Bonus 8), 3 in
-`tests/seed_test.ts` (Bonus 5), 6 in `tests/roles_test.ts` (Bonus 9), 3 in
+`tests/jwt_test.ts` (Bonus 7), 7 in `tests/openapi_test.ts` (Bonus 8, one for Bonus 19), 3
+in `tests/seed_test.ts` (Bonus 5), 6 in `tests/roles_test.ts` (Bonus 9), 3 in
 `tests/logging_test.ts` (Bonus 10), 9 in `tests/config_test.ts` (Bonus 11, one each for
 Bonus 14 and 19, and the defaults of 6, 12 and 16), 9 in `tests/upload_test.ts` (Bonus 12,
 one for Bonus 19), 4 in `tests/live_test.ts` (Bonus 13), 6 in `tests/purge_test.ts` (Bonus
@@ -1601,10 +1601,11 @@ repository, read the failing step's log, fixed the file with `deno fmt`, and pus
 
 Bonus 19: Deploy
 
-**Public URL: https://tasks-api-esma.onrender.com** (`/health`, `/readyz`, `/docs`). It
-runs the Docker image of Bonus 17 on **Render**, with the database on **Turso** (hosted
-libSQL). The free instance sleeps after some time without requests, so the first request
-after a pause can take up to a minute.
+**Public URL: https://tasks-api-esma.onrender.com** (`/health`, `/readyz`, `/docs`; the
+bare address redirects to `/docs`, because opening it in a browser first showed our 404
+`{"error":"not found",...}`). It runs the Docker image of Bonus 17 on **Render**, with the
+database on **Turso** (hosted libSQL). The free instance sleeps after some time without
+requests, so the first request after a pause can take up to a minute.
 
 **Why Render and not Deno Deploy.** The first thing that went wrong: I could not create a
 Deno Deploy account. console.deno.com answered "New signups are closed": Deno Deploy is

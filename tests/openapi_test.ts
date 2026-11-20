@@ -112,3 +112,10 @@ Deno.test("a body that is not JSON is 400, another content-type is 415", async (
     issues: [],
   });
 });
+
+Deno.test("the bare address / redirects to the docs page", async () => {
+  const app = await freshApp();
+  const res = await app.request("/");
+  assertEquals(res.status, 302);
+  assertEquals(res.headers.get("location"), "/docs");
+});

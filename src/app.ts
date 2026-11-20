@@ -173,6 +173,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
   });
   // The docs page: Swagger UI, which loads /openapi.json in the browser.
   app.get("/docs", swaggerUI({ url: "/openapi.json" }));
+  // Bonus 19: whoever opens the bare address (https://...onrender.com/) lands on the docs
+  // page instead of a 404.
+  app.get("/", (c) => c.redirect("/docs"));
 
   // ----- Auth ---------------------------------------------------------------
 
