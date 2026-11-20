@@ -1,0 +1,15 @@
+# Bonus 17: only deno.json, deno.lock, src/ and drizzle/ go into the image.
+.git
+.github
+.env
+.env.*
+*.db
+*.db-*
+uploads/
+node_modules/
+ui/
+tests/
+scripts/
+docs/
+README.md
+Dockerfile

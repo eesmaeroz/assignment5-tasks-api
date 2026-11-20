@@ -13,6 +13,7 @@ user sees and changes only their own tasks.
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task db:generate  # Bonus 1: a new migration in drizzle/ after a change in schema.ts
+    docker build -t tasks-api .   # Bonus 17: the image (see that section for docker run)
     deno task start:test # Bonus 11: start with .env.test (port 8001)
     deno task n1         # Bonus 3: count the queries of the N+1 and the GROUP BY summary
     deno task explain    # Bonus 4: the query plan and time before and after the index
@@ -399,6 +400,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 14: A background job with Deno.cron
 - Bonus 15: Rate limit on login
 - Bonus 16: A cache with Deno KV
+- Bonus 17: Docker
 - Bonus 18: Continuous integration
 - Bonus 20: Git repository
 
@@ -1471,6 +1473,107 @@ Tests (`tests/cache_test.ts`, 4 tests). A Drizzle logger counts the SELECTs on `
 change on one would not clear the cache of the other (Deno Deploy shares one KV, a laptop
 does not). The list `GET /api/tasks` is not cached at all, because one change would have
 to clear many pages.
+
+## Bonus 17: Docker
+
+Bonus 17: Docker
+
+`Dockerfile` and `.dockerignore` build an image that runs the API as the user `deno` (not
+root), with everything it keeps (the SQLite file, the KV cache of Bonus 16 and the
+uploaded images of Bonus 12) under `/data`, which is a volume.
+
+- **Dependencies before the source.** `COPY deno.json deno.lock` and `RUN deno install`
+  come first, then `COPY src` and `COPY drizzle`. Docker reuses a layer while its inputs
+  are the same, so a change in `src/` starts at step 5 and does not download anything; in
+  my build the download step was `[4/8] RUN deno install` and the source came after it.
+- **The migrations (Bonus 1) are in the image** (`COPY drizzle`), and the server runs them
+  when it starts, so an empty volume gets its tables and an old one gets only what is new.
+- **No secret in the image.** The image sets `APP_ENV=production`, so `config.ts`
+  (Bonus 11) refuses to start with the default secret: without a `JWT_SECRET` the server
+  stops with `JWT_SECRET: the default development secret is not allowed in production`.
+  The secret is given at `docker run` (`-e JWT_SECRET` takes it from my terminal), so it
+  is not in the image, not in Git and not in `docker history`.
+- **`.dockerignore`** keeps out `.git`, every `.env*`, `*.db*`, `uploads/`, `ui/`,
+  `tests/`, `scripts/`, `docs/` and the README: only `deno.json`, `deno.lock`, `src/` and
+  `drizzle/` are sent (the build context was 100 kB).
+- **Non-root:** `/data` is created and given to `deno` while still root, then `USER deno`.
+  A new named volume takes the owner of `/data` from the image, so `deno` can write there
+  and nowhere else.
+
+**The permission flags**, each as narrow as the app allows. The list was found (with
+Claude, in a Linux shell, not in Docker) by starting the server with Deno 2.6.3, the
+version of the image, and taking one flag away at a time; the quoted errors are from those
+runs, with the paths of the image in place of the paths of that shell:
+
+| Flag                                          | Why                                                                                                                                                |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--unstable-kv`, `--unstable-cron`            | `Deno.openKv` (Bonus 16) and `Deno.cron` (Bonus 14); without them: `Deno.openKv is not a function`                                                 |
+| `--allow-net=0.0.0.0:8000`                    | only to listen on the one port; the API calls no other host                                                                                        |
+| `--allow-env`                                 | `config.ts` reads the whole environment (`Deno.env.toObject()`); libSQL also reads `LIBSQL_JS_DEV`                                                 |
+| `--allow-read=/app,/data,/deno-dir`           | the code and migrations, the data, and the cached packages; without it: `Requires read access to "/app/drizzle/meta/_journal.json"`                |
+| `--allow-write=/data`                         | only the volume: database, KV and images; nothing in `/app` can be changed                                                                         |
+| `--allow-ffi=/deno-dir`                       | libSQL is a native library (`@libsql/linux-x64-gnu/.../index.node`) loaded from the package cache                                                  |
+| `--allow-sys=cpus,networkInterfaces,hostname` | the libSQL loader (`@neon-rs/load`, `isGlibc`) asks for these three to choose the right native file; without them: `Requires sys access to "cpus"` |
+
+**Real run** (cmd on my laptop, Docker Desktop):
+
+```
+C:\Users\eesma\Desktop\assignment5\assignment5>docker build -t tasks-api .
+[+] Building 27.0s (14/14) FINISHED                                    docker:desktop-linux
+ => [1/8] FROM docker.io/denoland/deno:2.6.3@sha256:075c8d99...                     13.4s
+ => [internal] load build context                                                     0.0s
+ => => transferring context: 100.41kB                                                 0.0s
+ => [2/8] WORKDIR /app                                                                0.1s
+ => [3/8] COPY deno.json deno.lock ./                                                 0.0s
+ => [4/8] RUN deno install                                                            5.9s
+ => [5/8] COPY src ./src                                                              0.0s
+ => [6/8] COPY drizzle ./drizzle                                                      0.0s
+ => [7/8] RUN deno cache --unstable-kv --unstable-cron src/main.ts                    0.2s
+ => [8/8] RUN mkdir /data && chown deno:deno /data                                    0.2s
+ => => naming to docker.io/library/tasks-api:latest                                   0.0s
+
+C:\Users\eesma\Desktop\assignment5\assignment5>docker images tasks-api
+IMAGE              ID             DISK USAGE   CONTENT SIZE   EXTRA
+tasks-api:latest   512445985675        426MB          108MB
+
+C:\Users\eesma\Desktop\assignment5\assignment5>docker volume create tasksdata
+C:\Users\eesma\Desktop\assignment5\assignment5>set JWT_SECRET=...
+C:\Users\eesma\Desktop\assignment5\assignment5>docker run -d --rm --name tasks -p 8000:8000 -v tasksdata:/data -e JWT_SECRET tasks-api
+
+C:\Users\eesma\Desktop\assignment5\assignment5>docker exec tasks whoami
+deno
+
+C:\Users\eesma\Desktop\assignment5\assignment5>curl -s -X POST localhost:8000/auth/register -H "content-type: application/json" -d "{\"email\":\"esma@example.com\",\"password\":\"kediler123\"}"
+{"id":1,"email":"esma@example.com","role":"user","createdAt":1795197211}
+C:\Users\eesma\Desktop\assignment5\assignment5>docker stop tasks
+tasks
+
+C:\Users\eesma\Desktop\assignment5\assignment5>docker run -d --rm --name tasks -p 8000:8000 -v tasksdata:/data -e JWT_SECRET tasks-api
+e14b06524248454db51fc247d586b6ef83c308fe8e85ba14dc82ca9501696c3a
+
+C:\Users\eesma\Desktop\assignment5\assignment5>curl -s -X POST localhost:8000/auth/register -H "content-type: application/json" -d "{\"email\":\"esma@example.com\",\"password\":\"kediler123\"}"
+{"error":"email already registered","issues":[]}
+C:\Users\eesma\Desktop\assignment5\assignment5>curl -s localhost:8000/readyz
+{"ready":true}
+C:\Users\eesma\Desktop\assignment5\assignment5>docker stop tasks
+tasks
+```
+
+(The build output is shortened to its steps; the secret is replaced by `...`; the output
+of `docker volume create` and of the first `docker run` (the container id) is left out.)
+`--rm` means `docker stop` **deletes** the container, so the second `docker run` is a
+brand-new container; the 409 `email already registered` shows that the user is still
+there, because the database lives on the volume `tasksdata`, not in the container.
+
+**Image size:** 426 MB on disk, 108 MB to download (compressed). Most of it is the Deno
+base image and the package cache. What I did to keep it small: the `.dockerignore` above
+(no `ui/` with its `node_modules`, no tests, no `.git`). What I could do next:
+`deno install` caches **every** import of `deno.json`, also `drizzle-kit` with `esbuild`,
+which only `deno task db:generate` needs and the server never loads. Measured in the same
+Linux shell with Deno 2.6.3, the package cache is 138 MB for all imports against 93 MB for
+only what `src/main.ts` imports. A small `deps.ts` that lists only the runtime packages,
+cached instead of the whole `deno.json`, would save about 45 MB and still keep the
+dependency layer before the source.
 
 ## Bonus 18: Continuous integration
 
