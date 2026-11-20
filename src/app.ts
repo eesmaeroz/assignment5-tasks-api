@@ -258,6 +258,9 @@ export function createApp(database: Db, options: AppOptions = {}) {
   const own = (id: number, userId: number) =>
     and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt));
 
+  /** The current time in seconds, computed by SQLite (like the created_at default). */
+  const NOW = sql`(strftime('%s','now'))`;
+
   // Bonus 14: done_at is set when a task becomes "done" and cleared when it is not done
   // any more. COALESCE keeps the first time, so saving a done task again (for example to
   // change its title) does not make it "newly done" and push the purge back.
@@ -347,7 +350,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
     const userId = c.get("userId");
     const [task] = await withDb((db) =>
       db.update(tasks)
-        .set({ ...input, doneAt: doneAtFor(input.status) })
+        .set({ ...input, doneAt: doneAtFor(input.status), updatedAt: NOW })
         .where(own(id, userId)).returning()
     );
     // Bonus 16: the cached copy is old now. Deleted, not replaced: the next GET loads it.
@@ -363,7 +366,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
     // Bonus 2: soft delete. The row stays; it only gets a deleted_at time.
     const [task] = await withDb((db) =>
       db.update(tasks)
-        .set({ deletedAt: sql`(strftime('%s','now'))` })
+        .set({ deletedAt: NOW, updatedAt: NOW })
         .where(own(id, userId)).returning({ id: tasks.id })
     );
     await cache?.delete(userId, id);
@@ -378,7 +381,7 @@ export function createApp(database: Db, options: AppOptions = {}) {
     // Only a task of this user that IS deleted can be restored.
     const [task] = await withDb((db) =>
       db.update(tasks)
-        .set({ deletedAt: null })
+        .set({ deletedAt: null, updatedAt: NOW })
         .where(
           and(eq(tasks.id, id), eq(tasks.userId, userId), isNotNull(tasks.deletedAt)),
         )
@@ -430,7 +433,8 @@ export function createApp(database: Db, options: AppOptions = {}) {
     await Deno.mkdir(uploadDir, { recursive: true });
     await Deno.writeFile(`${uploadDir}/${name}`, bytes);
     const [updated] = await withDb((db) =>
-      db.update(tasks).set({ attachment: name }).where(own(id, userId)).returning()
+      db.update(tasks).set({ attachment: name, updatedAt: NOW }).where(own(id, userId))
+        .returning()
     );
     // A new image replaces the old one, so the old file is not left behind.
     if (task.attachment) await removeSaved(uploadDir, task.attachment);

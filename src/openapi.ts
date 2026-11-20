@@ -62,6 +62,8 @@ export const TaskSchema = z.object({
   deletedAt: z.number().int().nullable(),
   doneAt: z.number().int().nullable(),
   attachment: z.string().nullable(),
+  updatedAt: z.number().int().nullable()
+    .openapi({ description: "last change (seconds), null if never changed" }),
 }).openapi("Task");
 
 const UserSchema = z.object({

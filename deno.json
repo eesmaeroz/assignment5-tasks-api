@@ -5,7 +5,7 @@
     "start:test": "deno run -A --unstable-kv --unstable-cron --env-file=.env.test src/main.ts",
     "start:prod": "deno run -A --unstable-kv --unstable-cron --env-file=.env.production src/main.ts",
     "test": "deno test -A --unstable-kv --unstable-cron",
-    "check": "deno check --unstable-kv --unstable-cron src/*.ts tests/*.ts scripts/*.ts scripts/lock/*.ts",
+    "check": "deno check --unstable-kv --unstable-cron src/*.ts tests/*.ts scripts/*.ts scripts/lock/*.ts drizzle.config.ts",
     "fmt": "deno fmt",
     "lint": "deno lint",
     "ui:install": "cd ui && deno install",
@@ -13,7 +13,9 @@
     "seed": "deno run -A scripts/seed.ts",
     "n1": "deno run -A scripts/n1.ts",
     "explain": "deno run -A scripts/explain.ts",
-    "watch": "deno run --allow-net --allow-env scripts/watch.ts"
+    "watch": "deno run --allow-net --allow-env scripts/watch.ts",
+    "db:generate": "deno run -A npm:drizzle-kit@^0.31 generate",
+    "db:migrate": "deno run -A npm:drizzle-kit@^0.31 migrate"
   },
   "imports": {
     "hono": "npm:hono@^4",
@@ -27,9 +29,12 @@
     "drizzle-orm/sqlite-core": "npm:drizzle-orm@^0.44/sqlite-core",
     "@libsql/client": "npm:@libsql/client@^0.15",
     "@std/assert": "jsr:@std/assert@^1",
-    "jose": "npm:jose@^6"
+    "jose": "npm:jose@^6",
+    "drizzle-kit": "npm:drizzle-kit@^0.31",
+    "drizzle-orm/libsql/migrator": "npm:drizzle-orm@^0.44/libsql/migrator"
   },
   "fmt": {
-    "lineWidth": 90
+    "lineWidth": 90,
+    "exclude": ["drizzle/"]
   }
 }

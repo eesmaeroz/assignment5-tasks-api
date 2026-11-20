@@ -4,6 +4,7 @@ import { createClient } from "@libsql/client";
 import * as schema from "./schema.ts";
 import type { Logger } from "drizzle-orm/logger";
 import { Pool } from "./pool.ts";
+import { migrate as runMigrations } from "drizzle-orm/libsql/migrator";
 
 export type Db = ReturnType<typeof createDb>;
 
@@ -17,36 +18,23 @@ export function createDb(url: string, logger?: Logger) {
   return { db, client };
 }
 
-/** Create the tables if they do not exist yet. Keep this in sync with schema.ts. */
-export async function migrate({ client }: Db) {
-  await client.batch([
-    `CREATE TABLE IF NOT EXISTS users (
-       id INTEGER PRIMARY KEY AUTOINCREMENT,
-       email TEXT NOT NULL UNIQUE,
-       password_hash TEXT NOT NULL,
-       role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-       created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-     )`,
-    // Bonus 7: no sessions table any more; login returns a signed token (src/jwt.ts).
-    // The CHECKs repeat the Zod rules in the database, so even a bad INSERT written by
-    // hand cannot store an unknown status or priority.
-    `CREATE TABLE IF NOT EXISTS tasks (
-       id INTEGER PRIMARY KEY AUTOINCREMENT,
-       user_id INTEGER NOT NULL REFERENCES users(id),
-       title TEXT NOT NULL,
-       status TEXT NOT NULL DEFAULT 'todo'
-         CHECK (status IN ('todo', 'in-progress', 'done')),
-       priority TEXT NOT NULL DEFAULT 'medium'
-         CHECK (priority IN ('low', 'medium', 'high')),
-       due_date TEXT,
-       created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-       deleted_at INTEGER,
-       done_at INTEGER,
-       attachment TEXT
-     )`,
-    // Bonus 4: the index for "my tasks" and "my tasks with this status".
-    `CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status)`,
-  ]);
+/**
+ * The drizzle/ folder next to src/, found from this file and not from the current folder,
+ * so tests and scripts work from anywhere. (On Windows a file URL is /C:/..., so the first
+ * slash goes.)
+ */
+const MIGRATIONS = (() => {
+  const path = decodeURIComponent(new URL("../drizzle", import.meta.url).pathname);
+  return Deno.build.os === "windows" ? path.slice(1) : path;
+})();
+
+/**
+ * Bonus 1: bring the database up to date with the migration files in drizzle/, which
+ * Drizzle Kit generates from schema.ts. Drizzle remembers in the table
+ * __drizzle_migrations which files ran already, so every file runs once.
+ */
+export async function migrate({ db }: Db) {
+  await runMigrations(db, { migrationsFolder: MIGRATIONS });
 }
 
 /**

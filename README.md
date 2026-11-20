@@ -9,9 +9,10 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000, docs on http://localhost:8000/docs
-    deno task test       # all tests (97)
+    deno task test       # all tests (102)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
+    deno task db:generate  # Bonus 1: a new migration in drizzle/ after a change in schema.ts
     deno task start:test # Bonus 11: start with .env.test (port 8001)
     deno task n1         # Bonus 3: count the queries of the N+1 and the GROUP BY summary
     deno task explain    # Bonus 4: the query plan and time before and after the index
@@ -44,10 +45,10 @@ button in the form, `type="button"` for the others), because `deno lint` reporte
 
 - `status` is `todo`, `in-progress` or `done` (default `todo`), `priority` is `low`,
   `medium` or `high` (default `medium`). In `schema.ts` they are `{ enum: [...] }`, so
-  TypeScript knows the values, and in `migrate()` they are `CHECK (... IN (...))`, so the
-  database refuses a wrong value even from a hand-written INSERT. The two lists come from
-  one place in the code (`STATUSES`, `PRIORITIES` in `schema.ts`), and the Zod schemas use
-  the same arrays.
+  TypeScript knows the values, and in the database they are `CHECK (... IN (...))` (since
+  Bonus 1 as `check(...)` in `schema.ts`, in the first migration), so the database refuses
+  a wrong value even from a hand-written INSERT. The two lists come from one place in the
+  code (`STATUSES`, `PRIORITIES` in `schema.ts`), and the Zod schemas use the same arrays.
 - **My own field: `dueDate`**, an optional deadline as `"YYYY-MM-DD"` (`null` = none). Zod
   checks it with `z.iso.date()`, which also refuses dates that do not exist, such as
   `2026-02-30`. I stored it as text and not as a number because a date without a time has
@@ -106,21 +107,21 @@ button in the form, `type="button"` for the others), because `deno lint` reporte
 
 ### Tests
 
-97 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
-given health test, and for the bonuses: 5 in `tests/softdelete_test.ts` (Bonus 2), 4 in
-`tests/summary_test.ts` (Bonus 3), 6 in `tests/pool_test.ts` (Bonus 6), 2 in
-`tests/index_test.ts` (Bonus 4), 7 in `tests/jwt_test.ts` (Bonus 7), 6 in
-`tests/openapi_test.ts` (Bonus 8), 3 in `tests/seed_test.ts` (Bonus 5), 6 in
-`tests/roles_test.ts` (Bonus 9), 3 in `tests/logging_test.ts` (Bonus 10), 8 in
-`tests/config_test.ts` (Bonus 11, one for Bonus 14 and the defaults of 6, 12 and 16), 8 in
-`tests/upload_test.ts` (Bonus 12), 4 in `tests/live_test.ts` (Bonus 13), 6 in
-`tests/purge_test.ts` (Bonus 14, one for Bonus 12), 6 in `tests/ratelimit_test.ts`
-(Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16). They cover everything the handout
-lists: duplicate email (409), wrong password (401), missing token (401), bad body (400),
-another user's task (404 for read, update **and** delete), invalid status (400) and
-pagination (page 2 holds the right task), plus filtering, bad query values, the
-101-character title, an impossible due date, update and delete, and the 404 shape.
-`tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+102 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+given health test, and for the bonuses: 5 in `tests/migrations_test.ts` (Bonus 1), 5 in
+`tests/softdelete_test.ts` (Bonus 2), 4 in `tests/summary_test.ts` (Bonus 3), 6 in
+`tests/pool_test.ts` (Bonus 6), 2 in `tests/index_test.ts` (Bonus 4), 7 in
+`tests/jwt_test.ts` (Bonus 7), 6 in `tests/openapi_test.ts` (Bonus 8), 3 in
+`tests/seed_test.ts` (Bonus 5), 6 in `tests/roles_test.ts` (Bonus 9), 3 in
+`tests/logging_test.ts` (Bonus 10), 8 in `tests/config_test.ts` (Bonus 11, one for Bonus
+14 and the defaults of 6, 12 and 16), 8 in `tests/upload_test.ts` (Bonus 12), 4 in
+`tests/live_test.ts` (Bonus 13), 6 in `tests/purge_test.ts` (Bonus 14, one for Bonus 12),
+6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16). They
+cover everything the handout lists: duplicate email (409), wrong password (401), missing
+token (401), bad body (400), another user's task (404 for read, update **and** delete),
+invalid status (400) and pagination (page 2 holds the right task), plus filtering, bad
+query values, the 101-character title, an impossible due date, update and delete, and the
+404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -382,6 +383,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 
 ## Bonuses claimed
 
+- Bonus 1: Migrations with Drizzle Kit
 - Bonus 2: Soft delete, restore and a transaction
 - Bonus 3: Joins and the N+1 problem
 - Bonus 4: Indexes and EXPLAIN
@@ -399,6 +401,88 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 16: A cache with Deno KV
 - Bonus 18: Continuous integration
 - Bonus 20: Git repository
+
+## Bonus 1: Migrations with Drizzle Kit
+
+Bonus 1: Migrations with Drizzle Kit
+
+The hand-written `CREATE TABLE IF NOT EXISTS` statements in `migrate()` are gone. The
+tables are now described only in `src/schema.ts`; Drizzle Kit writes the SQL from it into
+`drizzle/`, and `migrate()` in `src/db.ts` runs those files with
+`migrate(db, { migrationsFolder })` from `drizzle-orm/libsql/migrator`. Drizzle keeps a
+table `__drizzle_migrations`, so every file runs once.
+
+- `drizzle.config.ts` (from the handout), and two tasks: `deno task db:generate` writes a
+  new migration after a change in `schema.ts`, `deno task db:migrate` applies them to
+  `tasks.db` (the server also does it when it starts).
+- **Before generating I had to move the CHECKs.** My old SQL had
+  `CHECK (status IN (...))`, `CHECK (priority IN (...))` and `CHECK (role IN (...))`. They
+  were only in that SQL, not in `schema.ts`, so a generated migration would have quietly
+  lost them. They are now `check(...)` lines in `schema.ts`, and the first migration
+  contains all three.
+- `migrate()` finds `drizzle/` from its own file (`import.meta.url`), not from the current
+  folder, so the tests and scripts work from anywhere (on Windows the URL path starts with
+  `/C:/`, so the first slash is removed).
+- Drizzle Kit writes its JSON files without a newline at the end, which `deno fmt --check`
+  (and so the CI of Bonus 18) refuses. They are generated files, so I did not reformat
+  them: `drizzle/` is in `fmt.exclude` in `deno.json`.
+
+**The first migration.** `deno task db:generate` on my laptop:
+
+```
+C:\Users\eesma\Desktop\assignment5\assignment5>deno task db:generate
+Task db:generate deno run -A npm:drizzle-kit@^0.31 generate
+No config path provided, using default 'drizzle.config.ts'
+Reading config file 'C:\Users\eesma\Desktop\assignment5\assignment5\drizzle.config.ts'
+2 tables
+tasks 10 columns 1 indexes 1 fks
+users 5 columns 1 indexes 0 fks
+
+[✓] Your SQL migration file ➜ drizzle\0000_tired_northstar.sql 🚀
+```
+
+`drizzle/0000_tired_northstar.sql` has the two `CREATE TABLE` statements (with the foreign
+key and the three CHECKs), the index of Bonus 4 and the unique index on the email. Then
+`deno task test` passed all 97 tests, which now build every test database from this file.
+
+**How I made the second change.** The change is a column that tells when a task was last
+changed. I added one nullable column to `tasks` in `schema.ts`,
+`updatedAt: integer("updated_at")`, and set it to the current time in every route that
+changes a task (PUT, DELETE, restore and the image upload). `createdAt` stays as it is; a
+task that was never changed has `null`. Then I ran `deno task db:generate` again. Drizzle
+Kit compared `schema.ts` with the snapshot of the first migration
+(`drizzle/meta/0000_snapshot.json`) and wrote only the difference:
+
+```
+C:\Users\eesma\Desktop\assignment5\assignment5>deno task db:generate
+...
+tasks 11 columns 1 indexes 1 fks
+users 5 columns 1 indexes 0 fks
+
+[✓] Your SQL migration file ➜ drizzle\0001_messy_energizer.sql 🚀
+```
+
+`drizzle/0001_messy_energizer.sql` is one line:
+
+```sql
+ALTER TABLE `tasks` ADD `updated_at` integer;
+```
+
+This is the real fix for the problem in Bonus 2 and Bonus 9, where an old `tasks.db` had
+to be deleted because `CREATE TABLE IF NOT EXISTS` never adds a column: a database made
+with the first migration only gets the `ALTER TABLE`, and its rows stay. (A `tasks.db`
+from before Bonus 1 has no `__drizzle_migrations` table, so Drizzle would try to create
+its tables again; that one still has to be deleted once.) The column is also in the `Task`
+schema of the OpenAPI document (Bonus 8): because the responses are typed,
+`deno task check` would have failed if I had forgotten it there.
+
+Tests (`tests/migrations_test.ts`, 5 tests): `drizzle/` has exactly two `.sql` files, the
+first with both `CREATE TABLE`s and the second exactly the `ALTER TABLE` above; calling
+`migrate()` twice runs each file once (`__drizzle_migrations` has 2 rows); an **old
+database** made with a copy of `drizzle/` that knows only the first file gets the new
+column from `migrate()` and keeps its task (with `updated_at` `null`); the database still
+refuses `status = 'later'` with `CHECK constraint failed`; and a new task has
+`updatedAt: null` until a PUT sets it.
 
 ## Bonus 2: Soft delete, restore and a transaction
 
@@ -426,7 +510,8 @@ the place to remove them for real after some time.
 
 **Existing databases:** `CREATE TABLE IF NOT EXISTS` does not add a column to a table that
 already exists, so an old `tasks.db` must be deleted once (the handout's troubleshooting
-says the same). Migrations (Bonus 1) are the real fix for this.
+says the same). Migrations (Bonus 1) are the real fix for this, and I did them later: the
+`updated_at` column of Bonus 1 came as an `ALTER TABLE`.
 
 ### Register in one transaction
 
@@ -531,8 +616,9 @@ Every task query in the API starts with `WHERE user_id = ?`, and the list often 
 `AND status = ?`. So the index is on both columns, in that order:
 
 - `schema.ts`: `index("idx_tasks_user_status").on(t.userId, t.status)`
-- `migrate()`:
-  `CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status)`
+- `migrate()` (before Bonus 1):
+  `CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status)`; since
+  Bonus 1 Drizzle Kit writes it into the first migration from the line above
 
 `deno task explain` (`scripts/explain.ts`) fills a temporary database with **20 users and
 20,000 tasks** (in batches of 500 rows), drops the index, and measures the query
