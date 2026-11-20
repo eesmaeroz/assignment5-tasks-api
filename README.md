@@ -9,7 +9,7 @@ user sees and changes only their own tasks.
 
     cp .env.example .env
     deno task dev        # API on http://localhost:8000, docs on http://localhost:8000/docs
-    deno task test       # all tests (102)
+    deno task test       # all tests (104)
     deno task check      # type-check
     deno task seed       # Bonus 5: demo users and tasks
     deno task db:generate  # Bonus 1: a new migration in drizzle/ after a change in schema.ts
@@ -108,21 +108,22 @@ button in the form, `type="button"` for the others), because `deno lint` reporte
 
 ### Tests
 
-102 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
+104 tests (`deno task test`): 6 in `tests/auth_test.ts`, 12 in `tests/tasks_test.ts`, the
 given health test, and for the bonuses: 5 in `tests/migrations_test.ts` (Bonus 1), 5 in
 `tests/softdelete_test.ts` (Bonus 2), 4 in `tests/summary_test.ts` (Bonus 3), 6 in
 `tests/pool_test.ts` (Bonus 6), 2 in `tests/index_test.ts` (Bonus 4), 7 in
 `tests/jwt_test.ts` (Bonus 7), 6 in `tests/openapi_test.ts` (Bonus 8), 3 in
 `tests/seed_test.ts` (Bonus 5), 6 in `tests/roles_test.ts` (Bonus 9), 3 in
-`tests/logging_test.ts` (Bonus 10), 8 in `tests/config_test.ts` (Bonus 11, one for Bonus
-14 and the defaults of 6, 12 and 16), 8 in `tests/upload_test.ts` (Bonus 12), 4 in
-`tests/live_test.ts` (Bonus 13), 6 in `tests/purge_test.ts` (Bonus 14, one for Bonus 12),
-6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in `tests/cache_test.ts` (Bonus 16). They
-cover everything the handout lists: duplicate email (409), wrong password (401), missing
-token (401), bad body (400), another user's task (404 for read, update **and** delete),
-invalid status (400) and pagination (page 2 holds the right task), plus filtering, bad
-query values, the 101-character title, an impossible due date, update and delete, and the
-404 shape. `tests/helpers.ts` has `send()`, `login()` and `makeTask()`.
+`tests/logging_test.ts` (Bonus 10), 9 in `tests/config_test.ts` (Bonus 11, one each for
+Bonus 14 and 19, and the defaults of 6, 12 and 16), 9 in `tests/upload_test.ts` (Bonus 12,
+one for Bonus 19), 4 in `tests/live_test.ts` (Bonus 13), 6 in `tests/purge_test.ts` (Bonus
+14, one for Bonus 12), 6 in `tests/ratelimit_test.ts` (Bonus 15) and 4 in
+`tests/cache_test.ts` (Bonus 16). They cover everything the handout lists: duplicate email
+(409), wrong password (401), missing token (401), bad body (400), another user's task (404
+for read, update **and** delete), invalid status (400) and pagination (page 2 holds the
+right task), plus filtering, bad query values, the 101-character title, an impossible due
+date, update and delete, and the 404 shape. `tests/helpers.ts` has `send()`, `login()` and
+`makeTask()`.
 
 The tests really catch mistakes: with the owner condition removed from `own()` on purpose,
 "another user's task is 404 for read, update and delete" fails (at that time 18 passed and
@@ -402,6 +403,7 @@ the next push was green. The CI caught a mistake on the first try, in the CI fil
 - Bonus 16: A cache with Deno KV
 - Bonus 17: Docker
 - Bonus 18: Continuous integration
+- Bonus 19: Deploy (on Render with Turso; Deno Deploy takes no new users, see there)
 - Bonus 20: Git repository
 
 ## Bonus 1: Migrations with Drizzle Kit
@@ -1508,7 +1510,7 @@ runs, with the paths of the image in place of the paths of that shell:
 | Flag                                          | Why                                                                                                                                                |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--unstable-kv`, `--unstable-cron`            | `Deno.openKv` (Bonus 16) and `Deno.cron` (Bonus 14); without them: `Deno.openKv is not a function`                                                 |
-| `--allow-net=0.0.0.0:8000`                    | only to listen on the one port; the API calls no other host                                                                                        |
+| `--allow-net=0.0.0.0:8000,*.turso.io`         | to listen on the one port, and (since Bonus 19) to reach the hosted database on Turso; no other host                                               |
 | `--allow-env`                                 | `config.ts` reads the whole environment (`Deno.env.toObject()`); libSQL also reads `LIBSQL_JS_DEV`                                                 |
 | `--allow-read=/app,/data,/deno-dir`           | the code and migrations, the data, and the cached packages; without it: `Requires read access to "/app/drizzle/meta/_journal.json"`                |
 | `--allow-write=/data`                         | only the volume: database, KV and images; nothing in `/app` can be changed                                                                         |
@@ -1594,6 +1596,103 @@ fails, so the cheap checks come first.
 
 What I did: created the workflow file, pushed, opened the **Actions** tab of the
 repository, read the failing step's log, fixed the file with `deno fmt`, and pushed again.
+
+## Bonus 19: Deploy
+
+Bonus 19: Deploy
+
+**Public URL: https://tasks-api-esma.onrender.com** (`/health`, `/readyz`, `/docs`). It
+runs the Docker image of Bonus 17 on **Render**, with the database on **Turso** (hosted
+libSQL). The free instance sleeps after some time without requests, so the first request
+after a pause can take up to a minute.
+
+**Why Render and not Deno Deploy.** The first thing that went wrong: I could not create a
+Deno Deploy account. console.deno.com answered "New signups are closed": Deno Deploy is
+being shut down after the announcement of 9 October 2026 (the Deno team joins Cloudflare)
+and takes no new organizations. I asked in the course WhatsApp group whether another
+platform is accepted, and the answer was that Render or Fly.io with the Docker image is
+fine. I chose Render: its free web service runs a Dockerfile without a credit card, while
+a new Fly.io account gets only a short trial (2 machine hours or 7 days) and then needs a
+card, which is too short for the grading.
+
+**Steps:**
+
+1. **Turso:** created a database `tasks` (region `aws-eu-central-1`) and a database token
+   with "Read & Write" (the server creates the tables and writes rows; "Read Only" would
+   not work). The URL and the token are kept outside the project.
+2. **Code** (in Git, commit `29b5f01`):
+   - `createDb()` uses `@libsql/client/web` (only `fetch`) for a `libsql://` URL and sends
+     `authToken`. The normal `@libsql/client` loads libSQL's native library as soon as it
+     is imported, even for a remote URL (it asked for `--allow-sys` and `--allow-ffi` at
+     once), so it is now imported only when a `file:` database is opened.
+   - `config.ts` has `DATABASE_AUTH_TOKEN`, and refuses a `libsql:` URL without it.
+   - If the platform has no Deno KV or `Deno.cron`, the server starts anyway, without the
+     cache (Bonus 16) or the purge job (Bonus 14), and says so in the log. An upload
+     (Bonus 12) to a folder that cannot be written answers 503
+     `file uploads are not available on this server` instead of 500 (tested in
+     `tests/upload_test.ts`). On Render's free plan `/data` in the container can be
+     written, but it is not kept: the images and the KV cache are lost when the instance
+     restarts; the tasks are safe in Turso.
+3. **Render:** New → Web Service → the GitHub repository `assignment5-tasks-api`, branch
+   `main`, runtime Docker (Render found the `Dockerfile`), region Frankfurt, instance type
+   **Free** (the form first had the $7 plan selected). Environment variables, entered in
+   the dashboard only: `DATABASE_URL` and `DATABASE_AUTH_TOKEN` from Turso, `JWT_SECRET`
+   made with Render's "Generate" button, and `PORT=8000` (Render's default port is 10000,
+   but the image may only listen on 8000). `APP_ENV=production` comes from the image, so
+   the server would refuse to start without a real `JWT_SECRET` (Bonus 11).
+
+**Log: what went wrong and how I solved it**
+
+1. **Deno Deploy does not take new users** ("New signups are closed"). Solved by asking
+   the instructor and using Render with the Docker image, as described above.
+2. **The first Render deploy failed** (`29b5f01`, "Deploy failed", "Exited with status 1
+   while running your code"). The build was fine; the server stopped while starting. The
+   log on Render showed:
+
+   ```
+       at async migrate (file:///app/src/db.ts:53:3)
+       at async file:///app/src/main.ts:23:3
+   Caused by: NotCapable: Requires net access to "tasks-eesmaeroz.aws-eu-central-1.turso.io:443", run again with the --allow-net flag
+   ```
+
+   At start-up the server runs the migrations (Bonus 1), which is the first request to
+   Turso. In Bonus 17 I had narrowed the network permission to `--allow-net=0.0.0.0:8000`,
+   which allows listening on the port and nothing else; with a local file that was enough,
+   with a remote database it is not. The fix in the `Dockerfile` (commit `a081b7f`) is
+   `--allow-net=0.0.0.0:8000,*.turso.io`: still only the port and Turso's hosts, not the
+   whole internet. Render deployed the push by itself and the second deploy was live after
+   24 s.
+3. **`set TOKEN=<buraya token>` in cmd** answered "Dosya adı, dizin adı veya birim etiketi
+   sözdizimi hatalı" (the file name, directory name or volume label syntax is incorrect):
+   I had typed the placeholder with its angle brackets, and cmd reads `<` and `>` as "read
+   from a file" and "write to a file". The next request with `%TOKEN%` got 401
+   `{"error":"unauthorized","issues":[]}`, because `TOKEN` was not set. I then put the
+   token straight into the `authorization` header.
+
+**Real run** against the public URL (cmd on my laptop; the token is shortened here, it was
+valid for one hour):
+
+```
+C:\Users\eesma\Desktop\assignment5\assignment5>curl -s https://tasks-api-esma.onrender.com/health
+{"ok":true}
+C:\Users\eesma\Desktop\assignment5\assignment5>curl -s https://tasks-api-esma.onrender.com/readyz
+{"ready":true}
+C:\Users\eesma\Desktop\assignment5\assignment5>curl -s -X POST https://tasks-api-esma.onrender.com/auth/login -H "content-type: application/json" -d "{\"email\":\"esma@example.com\",\"password\":\"kediler123\"}"
+{"token":"eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoidXNlciIsInN1YiI6IjEiLCJpYXQiOjE3OTUyMDUzMDEsImV4cCI6MTc5NTIwODkwMX0.mSb2...8dM"}
+C:\Users\eesma\Desktop\assignment5\assignment5>curl -s https://tasks-api-esma.onrender.com/api/tasks -H "authorization: Bearer eyJhbGciOiJIUzI1NiJ9...8dM"
+{"items":[{"id":1,"userId":1,"title":"Welcome! Add your first task","status":"todo","priority":"low","dueDate":null,"createdAt":1795205130,"deletedAt":null,"doneAt":null,"attachment":null,"updatedAt":null}],"page":1,"limit":20,"total":1}
+C:\Users\eesma\Desktop\assignment5\assignment5>curl -s -X POST https://tasks-api-esma.onrender.com/auth/register -H "content-type: application/json" -d "{\"email\":\"esma@example.com\",\"password\":\"kediler123\"}"
+{"error":"email already registered","issues":[]}
+```
+
+I registered `esma@example.com` once before these commands (its answer was not copied);
+the last line shows that the user is still in Turso. `readyz` answering `ready: true`
+means the server reached Turso, and the task list has `updatedAt`, the column of the
+second migration (Bonus 1), so both migrations ran on the hosted database.
+
+**Secrets:** the Turso URL and token and the `JWT_SECRET` are only in Render's environment
+settings. They are not in Git, not in the image (`.dockerignore` keeps every `.env*` out)
+and not in this README.
 
 ## Bonus 20: Git repository
 
