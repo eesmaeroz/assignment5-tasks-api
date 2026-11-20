@@ -33,7 +33,7 @@ EXPOSE 8000
 # Each flag is explained in the README (Bonus 17). They are as narrow as the app allows.
 CMD ["run", \
      "--unstable-kv", "--unstable-cron", \
-     "--allow-net=0.0.0.0:8000", \
+     "--allow-net=0.0.0.0:8000,*.turso.io", \
      "--allow-env", \
      "--allow-read=/app,/data,/deno-dir", \
      "--allow-write=/data", \
